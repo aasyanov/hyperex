@@ -47,7 +47,15 @@ jobs:
 
       - name: Test
         shell: bash
-        run: go test -race -count=1 -timeout=180s -coverprofile=coverage.txt ./...
+        run: |
+          # examples/ are package main demos without tests; including them in
+          # coverprofile dilutes library coverage (e.g. 90% → ~79%).
+          pkgs=$(go list ./... | grep -v '/examples/')
+          go test -race -count=1 -timeout=180s -coverprofile=coverage.txt $pkgs
+
+      - name: Build examples
+        shell: bash
+        run: go build ./examples/...
 
       - name: Check coverage threshold
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.26'

@@ -14,7 +14,7 @@ All notable changes to `github.com/aasyanov/hyperex` are documented here.
 - Gate 2 craft: `names.go` for repeated language identifiers (goconst), wired optimizer option flags in `Engine.New`, removed unused private helpers, golangci-lint clean.
 - Coverage raised to ≥90% (`gate_cover_test.go`); fuzz pipeline uses tighter sandbox + eval context timeout.
 - **`Value.Equal` / `NewValue`:** no longer panic on function values (`*builtinFunc`); `NewValue` preserves Func kind for builtins/closures. Optimize fuzz compares successful results only (folds may mask UndefinedError).
-
+- CI coverage excludes `examples/` (`package main` demos have no tests and were diluting the profile to ~79%); examples still `go build` in CI.
 ### Fixed
 
 - **Pipe vs bitwise `|`.** `ident | ident` is now PIPE when the right-hand name matches a

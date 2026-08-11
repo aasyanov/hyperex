@@ -15,6 +15,7 @@ All notable changes to `github.com/aasyanov/hyperex` are documented here.
 - Coverage raised to ≥90% (`gate_cover_test.go`); fuzz pipeline uses tighter sandbox + eval context timeout.
 - **`Value.Equal` / `NewValue`:** no longer panic on function values (`*builtinFunc`); `NewValue` preserves Func kind for builtins/closures. Optimize fuzz compares successful results only (folds may mask UndefinedError).
 - CI coverage excludes `examples/` (`package main` demos have no tests and were diluting the profile to ~79%); examples still `go build` in CI.
+- **Optimizer:** do not apply `0+x` / `x+0` / `x*0` / `1*x` identities unless the operand is definitely numeric — `+` is also string concat (`0+"hello"` → `"0hello"`).
 ### Fixed
 
 - **Pipe vs bitwise `|`.** `ident | ident` is now PIPE when the right-hand name matches a

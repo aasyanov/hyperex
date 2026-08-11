@@ -5146,9 +5146,9 @@ func TestSimplify_Algebraic(t *testing.T) {
 		input    string
 		contains string // Result should contain this
 	}{
-		{"x + 0", "x"},
+		{"x + 0", "x"}, // may stay "x + 0" (ident not proven numeric) or fold
 		{"x * 1", "x"},
-		{"x * 0", "0"},
+		{"(1+2) + 0", "3"}, // numeric — foldable via const fold / algebra
 	}
 
 	for _, tt := range tests {
@@ -5159,6 +5159,34 @@ func TestSimplify_Algebraic(t *testing.T) {
 			}
 			if !strings.Contains(result, tt.contains) {
 				t.Errorf("Simplify(%q) = %q, should contain %q", tt.input, result, tt.contains)
+			}
+		})
+	}
+}
+
+func TestOptimizer_PlusZero_PreservesStringConcat(t *testing.T) {
+	// Algebraic 0+x / x+0 must not apply when + is string concat.
+	env := map[string]any{"s": "hello"}
+	cases := []struct {
+		expr string
+		want string
+	}{
+		{`0+"hello"`, "0hello"},
+		{`"hello"+0`, "hello0"},
+		{`0+s`, "0hello"},
+		{`s+0`, "hello0"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.expr, func(t *testing.T) {
+			for _, opt := range []bool{true, false} {
+				eng := New(WithOptimize(opt))
+				got, err := eng.Eval(context.Background(), tt.expr, env)
+				if err != nil {
+					t.Fatalf("optimize=%v: %v", opt, err)
+				}
+				if got != tt.want {
+					t.Fatalf("optimize=%v: got %v, want %q", opt, got, tt.want)
+				}
 			}
 		})
 	}
@@ -7359,11 +7387,11 @@ func TestValueString_CycleSafe(t *testing.T) {
 
 func TestOptimize_EquivalentToUnoptimized(t *testing.T) {
 	env := map[string]any{
-		"x": int64(10),
-		"y": int64(3),
+		"x":   int64(10),
+		"y":   int64(3),
 		"arr": []any{int64(1), int64(2), int64(3), int64(4)},
-		"m": map[string]any{"a": int64(1), "b": int64(2)},
-		"s": "hello",
+		"m":   map[string]any{"a": int64(1), "b": int64(2)},
+		"s":   "hello",
 	}
 	tests := []string{
 		"1 + 2 * 3",
@@ -9018,7 +9046,6 @@ func TestVM_PopPeek_NonDebug(t *testing.T) {
 	// Test pop and peek in non-debug mode
 	restore := SetDebugModeForTest(false)
 	defer restore()
-
 
 	code := &bytecode{
 		Instructions: []instruction{{Op: opHalt}},

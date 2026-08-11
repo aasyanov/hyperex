@@ -807,13 +807,13 @@ func (o *optimizer) reduceStrength(node Node) Node {
 				return &intLit{Value: 1}
 			}
 		case "*":
-			// x * 2 -> x + x (only for simple operands)
-			if r, ok := right.(*intLit); ok && r.Value == 2 && o.isSimple(left) {
+			// x * 2 -> x + x only for numeric x (string repeat / array would diverge)
+			if r, ok := right.(*intLit); ok && r.Value == 2 && o.isSimple(left) && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return &binaryExpr{Op: "+", Left: left, Right: left}
 			}
 			// 2 * x -> x + x
-			if l, ok := left.(*intLit); ok && l.Value == 2 && o.isSimple(right) {
+			if l, ok := left.(*intLit); ok && l.Value == 2 && o.isSimple(right) && o.isDefinitelyNumeric(right) {
 				o.reducedCount++
 				return &binaryExpr{Op: "+", Left: right, Right: right}
 			}
@@ -931,41 +931,31 @@ func (o *optimizer) simplifyAlgebra(node Node) Node {
 
 		switch n.Op {
 		case "+":
+			// + is also string/array concat — only fold additive identity on
+			// operands that are definitely numeric.
 			// x + 0 -> x
-			if r, ok := right.(*intLit); ok && r.Value == 0 {
-				o.reducedCount++
-				return left
-			}
-			if r, ok := right.(*floatLit); ok && r.Value == 0 {
+			if o.isZero(right) && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return left
 			}
 			// 0 + x -> x
-			if l, ok := left.(*intLit); ok && l.Value == 0 {
-				o.reducedCount++
-				return right
-			}
-			if l, ok := left.(*floatLit); ok && l.Value == 0 {
+			if o.isZero(left) && o.isDefinitelyNumeric(right) {
 				o.reducedCount++
 				return right
 			}
 		case "-":
 			// x - 0 -> x
-			if r, ok := right.(*intLit); ok && r.Value == 0 {
-				o.reducedCount++
-				return left
-			}
-			if r, ok := right.(*floatLit); ok && r.Value == 0 {
+			if o.isZero(right) && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return left
 			}
 			// x - x -> 0 (only for simple expressions)
-			if o.nodesEqual(left, right) && o.isSideEffectFree(left) {
+			if o.nodesEqual(left, right) && o.isSideEffectFree(left) && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return &intLit{Value: 0}
 			}
 		case "*":
-			// x * 1 -> x
+			// x * 1 -> x (safe for string repeat and numbers)
 			if r, ok := right.(*intLit); ok && r.Value == 1 {
 				o.reducedCount++
 				return left
@@ -974,37 +964,33 @@ func (o *optimizer) simplifyAlgebra(node Node) Node {
 				o.reducedCount++
 				return left
 			}
-			// 1 * x -> x
-			if l, ok := left.(*intLit); ok && l.Value == 1 {
+			// 1 * x -> x only when x is numeric (1*"ab" is not string-repeat)
+			if o.isOne(left) && o.isDefinitelyNumeric(right) {
 				o.reducedCount++
 				return right
 			}
-			if l, ok := left.(*floatLit); ok && l.Value == 1 {
-				o.reducedCount++
-				return right
-			}
-			// x * 0 -> 0 (only if side-effect free)
-			if r, ok := right.(*intLit); ok && r.Value == 0 && o.isSideEffectFree(left) {
+			// x * 0 -> 0 only for numeric x ("ab"*0 yields "")
+			if o.isZero(right) && o.isSideEffectFree(left) && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return &intLit{Value: 0}
 			}
-			// 0 * x -> 0 (only if side-effect free)
-			if l, ok := left.(*intLit); ok && l.Value == 0 && o.isSideEffectFree(right) {
+			// 0 * x -> 0 only for numeric x (0*"ab" is a runtime error)
+			if o.isZero(left) && o.isSideEffectFree(right) && o.isDefinitelyNumeric(right) {
 				o.reducedCount++
 				return &intLit{Value: 0}
 			}
 		case "/":
 			// x / 1 -> x
-			if r, ok := right.(*intLit); ok && r.Value == 1 {
+			if r, ok := right.(*intLit); ok && r.Value == 1 && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return left
 			}
-			if r, ok := right.(*floatLit); ok && r.Value == 1 {
+			if r, ok := right.(*floatLit); ok && r.Value == 1 && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return left
 			}
 			// x / x -> 1 (only for simple, non-zero expressions)
-			if o.nodesEqual(left, right) && o.isSideEffectFree(left) && !o.isZero(left) {
+			if o.nodesEqual(left, right) && o.isSideEffectFree(left) && !o.isZero(left) && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return &intLit{Value: 1}
 			}
@@ -1042,7 +1028,10 @@ func (o *optimizer) simplifyAlgebra(node Node) Node {
 			}
 		}
 
-		return &binaryExpr{Op: n.Op, Left: left, Right: right}
+		if left != n.Left || right != n.Right {
+			return &binaryExpr{Op: n.Op, Left: left, Right: right}
+		}
+		return n
 
 	case *unaryExpr:
 		operand := o.simplifyAlgebra(n.Operand)
@@ -1142,6 +1131,40 @@ func (o *optimizer) isZero(node Node) bool {
 	}
 	if f, ok := node.(*floatLit); ok && f.Value == 0 {
 		return true
+	}
+	return false
+}
+
+// isOne reports whether node is the numeric literal 1.
+func (o *optimizer) isOne(node Node) bool {
+	if i, ok := node.(*intLit); ok && i.Value == 1 {
+		return true
+	}
+	if f, ok := node.(*floatLit); ok && f.Value == 1 {
+		return true
+	}
+	return false
+}
+
+// isDefinitelyNumeric reports whether node can only evaluate to a number.
+// Used to avoid algebraic folds that are wrong for string concat / repeat.
+func (o *optimizer) isDefinitelyNumeric(node Node) bool {
+	switch n := node.(type) {
+	case *intLit, *floatLit:
+		return true
+	case *unaryExpr:
+		switch n.Op {
+		case "-", "+", "~":
+			return o.isDefinitelyNumeric(n.Operand)
+		}
+	case *binaryExpr:
+		switch n.Op {
+		case "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>":
+			return o.isDefinitelyNumeric(n.Left) && o.isDefinitelyNumeric(n.Right)
+		case "+":
+			// + is numeric only when both sides are numeric (else string/array concat).
+			return o.isDefinitelyNumeric(n.Left) && o.isDefinitelyNumeric(n.Right)
+		}
 	}
 	return false
 }

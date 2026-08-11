@@ -5192,6 +5192,70 @@ func TestOptimizer_PlusZero_PreservesStringConcat(t *testing.T) {
 	}
 }
 
+func TestOptimizer_Logical_PreserveOperandSemantics(t *testing.T) {
+	// && / || return an operand (LANGUAGE.md), not a coerced bool.
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{"1 && true", true},
+		{"true && 1", int64(1)},
+		{"0 || false", false},
+		{"false || 0", int64(0)},
+		{"1 || true", int64(1)},
+		{"true || 1", true},
+		{"0 && true", int64(0)},
+		{`"hi" && true`, true},
+		{`true && "hi"`, "hi"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.expr, func(t *testing.T) {
+			for _, opt := range []bool{true, false} {
+				eng := New(WithOptimize(opt))
+				got, err := eng.Eval(context.Background(), tt.expr, nil)
+				if err != nil {
+					t.Fatalf("optimize=%v: %v", opt, err)
+				}
+				if !NewValue(got).Equal(NewValue(tt.want)) {
+					t.Fatalf("optimize=%v: got %v (%T), want %v (%T)", opt, got, got, tt.want, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestOptimizer_DoubleBitNot_PreservesBoolCoercion(t *testing.T) {
+	// ~~x → x is only valid for integers; ~ coerces bool via Int().
+	cases := []struct {
+		expr string
+		want any
+	}{
+		{"~~!0", int64(1)},
+		{"~~!00", int64(1)},
+		{"~~true", int64(1)},
+		{"~~false", int64(0)},
+		{"~~0", int64(0)},
+		{"~~1", int64(1)},
+		{"~~-1", int64(-1)},
+		{"~~.1", int64(0)},
+		{"~~1.9", int64(1)},
+	}
+	for _, tt := range cases {
+		t.Run(tt.expr, func(t *testing.T) {
+			for _, opt := range []bool{true, false} {
+				eng := New(WithOptimize(opt))
+				got, err := eng.Eval(context.Background(), tt.expr, nil)
+				if err != nil {
+					t.Fatalf("optimize=%v: %v", opt, err)
+				}
+				if !NewValue(got).Equal(NewValue(tt.want)) {
+					t.Fatalf("optimize=%v: got %v (%T), want %v (%T)", opt, got, got, tt.want, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func TestExpand_Macros(t *testing.T) {
 	macros := map[string]string{
 		"ADULT": "age >= 18",

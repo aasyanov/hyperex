@@ -16,6 +16,9 @@ All notable changes to `github.com/aasyanov/hyperex` are documented here.
 - **`Value.Equal` / `NewValue`:** no longer panic on function values (`*builtinFunc`); `NewValue` preserves Func kind for builtins/closures. Optimize fuzz compares successful results only (folds may mask UndefinedError).
 - CI coverage excludes `examples/` (`package main` demos have no tests and were diluting the profile to ~79%); examples still `go build` in CI.
 - **Optimizer:** do not apply `0+x` / `x+0` / `x*0` / `1*x` identities unless the operand is definitely numeric — `+` is also string concat (`0+"hello"` → `"0hello"`).
+- **Optimizer:** removed incorrect `x && true → x` and `x || false → x` folds — `&&`/`||` return an operand (`1 && true` → `true`, not `1`).
+- **Optimizer:** `~~x → x` only for integer x (`~` uses `Int()`; `~~0.1` → `0`, `~~true` → `1`).
+- **Optimizer:** `x**0` / `x**1` / `x**2` strength reduction only for numeric x (`"hello"**1` must not become `"hello"`).
 ### Fixed
 
 - **Pipe vs bitwise `|`.** `ident | ident` is now PIPE when the right-hand name matches a

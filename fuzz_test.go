@@ -201,6 +201,16 @@ func FuzzOptimize_Equivalent(f *testing.F) {
 	f.Add("unique([1,2,2,3]) | len")
 	f.Add("1+2+3+4")
 	f.Add("x*1 + 0")
+	// Regression seeds (optimizer vs runtime semantics)
+	f.Add(`0+"hello"`)
+	f.Add("1 && true")
+	f.Add("~~!0")
+	f.Add("~~true")
+	f.Add("~~false")
+	f.Add("s**1")
+	f.Add("s**0")
+	f.Add("~~.1")
+	f.Add("~~1.5")
 
 	f.Fuzz(func(t *testing.T, expr string) {
 		if len(expr) > 512 {
@@ -233,7 +243,15 @@ func FuzzOptimize_Equivalent(f *testing.F) {
 				// Algebraic folds (e.g. A*0 → 0) can mask UndefinedError; errors need not match.
 				return
 			}
-			if !NewValue(r1).Equal(NewValue(r2)) {
+			v1, v2 := NewValue(r1), NewValue(r2)
+			// Closures/funcs are rebuilt per Compile — pointer identity will differ.
+			if v1.IsFunc() || v2.IsFunc() {
+				if v1.IsFunc() && v2.IsFunc() {
+					return
+				}
+				t.Fatalf("func-ness mismatch: opt=%v no=%v", r1, r2)
+			}
+			if !v1.Equal(v2) {
 				t.Fatalf("result mismatch: opt=%v no=%v", r1, r2)
 			}
 		})

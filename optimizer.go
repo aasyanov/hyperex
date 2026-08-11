@@ -791,18 +791,18 @@ func (o *optimizer) reduceStrength(node Node) Node {
 
 		switch n.Op {
 		case "**":
-			// x ** 2 -> x * x (only for simple operands)
-			if r, ok := right.(*intLit); ok && r.Value == 2 && o.isSimple(left) {
+			// x ** 2 -> x * x only for numeric x
+			if r, ok := right.(*intLit); ok && r.Value == 2 && o.isSimple(left) && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return &binaryExpr{Op: "*", Left: left, Right: left}
 			}
-			// x ** 1 -> x
-			if r, ok := right.(*intLit); ok && r.Value == 1 {
+			// x ** 1 -> x only for numeric x (pow coerces via Float)
+			if r, ok := right.(*intLit); ok && r.Value == 1 && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return left
 			}
-			// x ** 0 -> 1
-			if r, ok := right.(*intLit); ok && r.Value == 0 {
+			// x ** 0 -> 1 only for numeric x
+			if r, ok := right.(*intLit); ok && r.Value == 0 && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return &intLit{Value: 1}
 			}
@@ -995,37 +995,32 @@ func (o *optimizer) simplifyAlgebra(node Node) Node {
 				return &intLit{Value: 1}
 			}
 		case "&&":
+			// Semicolon-style short-circuit: return an operand (not a coerced bool).
 			// true && x -> x
 			if l, ok := left.(*boolLit); ok && l.Value {
 				o.reducedCount++
 				return right
 			}
-			// false && x -> false (short-circuit)
+			// false && x -> false (RHS unevaluated)
 			if l, ok := left.(*boolLit); ok && !l.Value {
 				o.reducedCount++
 				return &boolLit{Value: false}
 			}
-			// x && true -> x
-			if r, ok := right.(*boolLit); ok && r.Value {
-				o.reducedCount++
-				return left
-			}
+			// NOTE: do NOT fold `x && true -> x` — when x is truthy the result is
+			// `true`, not x (e.g. `1 && true` → true).
 		case "||":
 			// false || x -> x
 			if l, ok := left.(*boolLit); ok && !l.Value {
 				o.reducedCount++
 				return right
 			}
-			// true || x -> true (short-circuit)
+			// true || x -> true (RHS unevaluated)
 			if l, ok := left.(*boolLit); ok && l.Value {
 				o.reducedCount++
 				return &boolLit{Value: true}
 			}
-			// x || false -> x
-			if r, ok := right.(*boolLit); ok && !r.Value {
-				o.reducedCount++
-				return left
-			}
+			// NOTE: do NOT fold `x || false -> x` — when x is falsy the result is
+			// `false`, not x (e.g. `0 || false` → false).
 		}
 
 		if left != n.Left || right != n.Right {
@@ -1047,17 +1042,18 @@ func (o *optimizer) simplifyAlgebra(node Node) Node {
 			}
 		}
 
-		// --x -> x (when x is number)
+		// --x -> x only for numeric x
 		if n.Op == "-" {
-			if inner, ok := operand.(*unaryExpr); ok && inner.Op == "-" {
+			if inner, ok := operand.(*unaryExpr); ok && inner.Op == "-" && o.isDefinitelyNumeric(inner.Operand) {
 				o.reducedCount++
 				return inner.Operand
 			}
 		}
 
-		// ~~x -> x
+		// ~~x -> x only for integer x. Bitwise ~ always goes through Int(), so
+		// ~~0.1 → 0 at runtime — cancelling would wrongly yield 0.1.
 		if n.Op == "~" {
-			if inner, ok := operand.(*unaryExpr); ok && inner.Op == "~" {
+			if inner, ok := operand.(*unaryExpr); ok && inner.Op == "~" && o.isDefinitelyInt(inner.Operand) {
 				o.reducedCount++
 				return inner.Operand
 			}
@@ -1164,6 +1160,28 @@ func (o *optimizer) isDefinitelyNumeric(node Node) bool {
 		case "+":
 			// + is numeric only when both sides are numeric (else string/array concat).
 			return o.isDefinitelyNumeric(n.Left) && o.isDefinitelyNumeric(n.Right)
+		}
+	}
+	return false
+}
+
+// isDefinitelyInt reports whether node can only evaluate to an int64.
+// Required for ~~x → x (bitwise ~ always uses Int() coercion).
+func (o *optimizer) isDefinitelyInt(node Node) bool {
+	switch n := node.(type) {
+	case *intLit:
+		return true
+	case *unaryExpr:
+		switch n.Op {
+		case "-", "+", "~":
+			return o.isDefinitelyInt(n.Operand)
+		}
+	case *binaryExpr:
+		switch n.Op {
+		case "-", "*", "%", "&", "|", "^", "<<", ">>":
+			return o.isDefinitelyInt(n.Left) && o.isDefinitelyInt(n.Right)
+		case "+":
+			return o.isDefinitelyInt(n.Left) && o.isDefinitelyInt(n.Right)
 		}
 	}
 	return false

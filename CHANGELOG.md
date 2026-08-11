@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **README** — rewritten in sibling style (Problem → Architecture → How it works → Quick start → API/contracts → Benchmarks → Quality); dual-OS CI bench medians retained.
+
 ## [1.0.0] — 2026-08-11
 
 First public standalone release of `github.com/aasyanov/hyperex`. Greenfield surface: compile-once / eval-many expression engine with context-first Eval, best-effort sandbox, and a narrowed public façade (Wave 2–3). Covered by Gate M proofs and Gate 5 craft bars (cover ≥90%, fuzz, lint).

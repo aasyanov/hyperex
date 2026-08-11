@@ -1,0 +1,1496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HyperEx Playground</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --bg-hover: #30363d;
+            --border: #30363d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent: #58a6ff;
+            --accent-hover: #79c0ff;
+            --success: #3fb950;
+            --error: #f85149;
+            --warning: #d29922;
+            --purple: #bc8cff;
+            --cyan: #39c5cf;
+            --orange: #ffa657;
+            --pink: #ff7b72;
+            --gradient-start: #7c3aed;
+            --gradient-end: #2dd4bf;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Header - compact */
+        .header {
+            background: linear-gradient(135deg, var(--gradient-start) 0%, var(--gradient-end) 100%);
+            padding: 1rem 2rem;
+            position: relative;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+            opacity: 0.3;
+        }
+
+        .header-content {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-icon {
+            font-size: 2rem;
+        }
+
+        .logo-text {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .logo-sub {
+            font-size: 0.875rem;
+            opacity: 0.8;
+            font-weight: 400;
+        }
+
+        .header-stats {
+            display: flex;
+            gap: 2rem;
+            font-size: 0.875rem;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .stat-label {
+            opacity: 0.8;
+        }
+
+        /* Main Layout - fixed height, no page scroll */
+        .main {
+            display: grid;
+            grid-template-columns: 300px 1fr 360px;
+            gap: 1px;
+            background: var(--border);
+            height: calc(100vh - 85px);
+            overflow: hidden;
+        }
+
+        .panel {
+            background: var(--bg-secondary);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+        }
+
+        /* Examples Panel */
+        .category-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .category-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0;
+            font-weight: 600;
+            color: var(--text-primary);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .category-header:hover {
+            color: var(--accent);
+        }
+
+        .category-icon {
+            font-size: 1.1rem;
+        }
+
+        .category-count {
+            margin-left: auto;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            background: var(--bg-tertiary);
+            padding: 0.125rem 0.5rem;
+            border-radius: 10px;
+        }
+
+        .category-examples {
+            margin-left: 1.5rem;
+            display: none;
+        }
+
+        .category-examples.expanded {
+            display: block;
+        }
+
+        .example-item {
+            padding: 0.5rem 0.75rem;
+            margin: 0.25rem 0;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+            transition: all 0.15s ease;
+            border-left: 2px solid transparent;
+        }
+
+        .example-item:hover {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .example-item.selected {
+            background: var(--bg-tertiary);
+            border-left-color: var(--accent);
+            color: var(--accent);
+        }
+
+        /* Editor Panel */
+        .editor-area {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .editor-toolbar {
+            display: flex;
+            gap: 0.5rem;
+            padding: 0.75rem 1rem;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border);
+            flex-wrap: wrap;
+            flex-shrink: 0;
+        }
+
+        .toolbar-group {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .toolbar-separator {
+            width: 1px;
+            height: 24px;
+            background: var(--border);
+            margin: 0 0.5rem;
+        }
+
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);
+        }
+
+        .btn-secondary {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover {
+            background: var(--border);
+        }
+
+        .btn-icon {
+            padding: 0.5rem;
+        }
+
+        .editor-input {
+            flex: 1;
+            min-height: 0; /* Important for flex shrinking */
+            display: flex;
+            flex-direction: column;
+            padding: 1rem;
+        }
+
+        .code-textarea {
+            flex: 1;
+            min-height: 100px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9375rem;
+            color: var(--text-primary);
+            resize: vertical;
+            line-height: 1.6;
+        }
+
+        .code-textarea:focus {
+            outline: none;
+        }
+
+        .code-textarea::placeholder {
+            color: var(--text-muted);
+        }
+
+        /* Results Panel */
+        .result-section {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .result-section:last-child {
+            border-bottom: none;
+        }
+
+        .result-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+        }
+
+        .result-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1rem;
+            padding: 0.75rem;
+            background: var(--bg-primary);
+            border-radius: 6px;
+            word-break: break-all;
+            white-space: pre-wrap;
+        }
+
+        .result-value.success {
+            color: var(--success);
+        }
+
+        .result-value.error {
+            color: var(--error);
+        }
+
+        .result-meta {
+            display: flex;
+            gap: 1rem;
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .meta-item .value {
+            color: var(--cyan);
+        }
+
+        /* Options */
+        .options-grid {
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .option-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+        }
+
+        .option-label {
+            font-size: 0.8125rem;
+            color: var(--text-secondary);
+        }
+
+        .toggle {
+            position: relative;
+            width: 40px;
+            height: 22px;
+            background: var(--bg-tertiary);
+            border-radius: 11px;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .toggle.active {
+            background: var(--accent);
+        }
+
+        .toggle::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 18px;
+            height: 18px;
+            background: white;
+            border-radius: 50%;
+            transition: transform 0.2s ease;
+        }
+
+        .toggle.active::after {
+            transform: translateX(18px);
+        }
+
+        .input-field {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.5rem 0.75rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8125rem;
+            color: var(--text-primary);
+            width: 80px;
+            text-align: right;
+        }
+
+        .input-field:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        /* Environment Editor */
+        .env-editor {
+            background: var(--bg-primary);
+            border-radius: 6px;
+            padding: 0.75rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8125rem;
+            min-height: 120px;
+            flex: 1;
+            resize: none;
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            width: 100%;
+        }
+
+        .env-editor:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        /* Description Box - fixed at bottom of editor */
+        .description-box {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 0 1rem 1rem 1rem !important;
+            flex-shrink: 0;
+        }
+
+        .description-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--accent);
+        }
+
+        .description-text {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .description-expected {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8125rem;
+        }
+
+        .description-expected .label {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .description-expected .value {
+            color: var(--purple);
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-tertiary);
+        }
+
+        .tab {
+            padding: 0.75rem 1.25rem;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s ease;
+        }
+
+        .tab:hover {
+            color: var(--text-secondary);
+        }
+
+        .tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        .tab-content {
+            display: none;
+            padding: 1rem;
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .tab-content.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Analysis Grid */
+        .analysis-grid {
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .analysis-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .analysis-item:last-child {
+            border-bottom: none;
+        }
+
+        .analysis-label {
+            color: var(--text-muted);
+            font-size: 0.8125rem;
+        }
+
+        .analysis-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8125rem;
+            color: var(--cyan);
+        }
+
+        .analysis-value.bool-true {
+            color: var(--success);
+        }
+
+        .analysis-value.bool-false {
+            color: var(--error);
+        }
+
+        .analysis-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+
+        .analysis-tag {
+            background: var(--bg-tertiary);
+            padding: 0.125rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+
+        /* Functions Reference */
+        .functions-search {
+            width: 100%;
+            padding: 0.75rem;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+
+        .functions-search:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .function-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .function-group-title {
+            font-weight: 600;
+            color: var(--purple);
+            margin-bottom: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .function-item {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+        }
+
+        .function-item:hover {
+            background: var(--bg-tertiary);
+            margin: 0 -1rem;
+            padding: 0.5rem 1rem;
+        }
+
+        .function-name {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--accent);
+            font-size: 0.8125rem;
+        }
+
+        .function-sig {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            margin-left: 0.5rem;
+        }
+
+        .function-desc {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            margin-top: 0.25rem;
+        }
+
+        /* Loading */
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Keyboard shortcut hint */
+        .kbd {
+            display: inline-block;
+            padding: 0.125rem 0.375rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.6875rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-muted);
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .main {
+                grid-template-columns: 1fr;
+                height: auto;
+                min-height: calc(100vh - 70px);
+                overflow: auto;
+            }
+
+            body {
+                height: auto;
+                overflow: auto;
+            }
+
+            .panel {
+                border-bottom: 1px solid var(--border);
+                overflow: visible;
+            }
+
+            .examples-panel {
+                max-height: 250px;
+            }
+
+            .code-textarea {
+                min-height: 120px;
+            }
+
+            .editor-area {
+                overflow: visible;
+            }
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg-hover);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--border);
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <div>
+                    <div class="logo-text">HyperEx Playground</div>
+                    <div class="logo-sub">Interactive Expression Evaluator</div>
+                </div>
+            </div>
+            <div class="header-stats">
+                <div class="stat">
+                    <div class="stat-value">70+</div>
+                    <div class="stat-label">Functions</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="examples-count">200+</div>
+                    <div class="stat-label">Examples</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">0 deps</div>
+                    <div class="stat-label">Pure Go</div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main">
+        <!-- Examples Panel -->
+        <div class="panel examples-panel">
+            <div class="panel-header">
+                Examples
+            </div>
+            <div class="panel-content" id="examples-list">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <!-- Editor Panel -->
+        <div class="panel">
+            <div class="editor-area">
+                <div class="editor-toolbar">
+                    <div class="toolbar-group">
+                        <button class="btn btn-primary" onclick="runExpression()">
+                            Run <span class="kbd">Ctrl+Enter</span>
+                        </button>
+                        <button class="btn btn-secondary" onclick="analyzeExpression()">
+                            Analyze
+                        </button>
+                        <button class="btn btn-secondary" onclick="profileExpression()">
+                            Profile
+                        </button>
+                        <button class="btn btn-secondary" onclick="typecheckExpression()">
+                            Typecheck
+                        </button>
+                    </div>
+                    <div class="toolbar-separator"></div>
+                    <div class="toolbar-group">
+                        <button class="btn btn-secondary" onclick="simplifyExpression()">
+                            Simplify
+                        </button>
+                        <button class="btn btn-secondary" onclick="inlineExpression()">
+                            Inline
+                        </button>
+                        <button class="btn btn-secondary" onclick="validateExpression()">
+                            Validate
+                        </button>
+                        <button class="btn btn-secondary" onclick="clearEditor()">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="editor-input">
+                    <textarea 
+                        id="expression-input" 
+                        class="code-textarea" 
+                        placeholder="Enter your expression here...&#10;&#10;Examples:&#10;  2 + 2 * 3&#10;  let {name, age} = user; name + ' is ' + age&#10;  filter(items, x => x.active) | pluck('name')&#10;&#10;Press Ctrl+Enter to run"
+                        spellcheck="false"
+                    ></textarea>
+                </div>
+
+                <!-- Description Box - fixed at bottom -->
+                <div id="description-box" class="description-box" style="display: none;">
+                    <div class="description-title" id="desc-title"></div>
+                    <div class="description-text" id="desc-text"></div>
+                    <div class="description-expected">
+                        <div class="label">Expected Result:</div>
+                        <div class="value" id="desc-expected"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel -->
+        <div class="panel">
+            <div class="tabs">
+                <div class="tab active" data-tab="result">Result</div>
+                <div class="tab" data-tab="analysis">Analysis</div>
+                <div class="tab" data-tab="options">Options</div>
+                <div class="tab" data-tab="env">Environment</div>
+                <div class="tab" data-tab="functions">Functions</div>
+            </div>
+
+            <!-- Result Tab -->
+            <div class="tab-content active" id="tab-result">
+                <div class="result-section">
+                    <div class="result-label">Output</div>
+                    <div class="result-value" id="result-output">
+                        <span style="color: var(--text-muted)">Run an expression to see results</span>
+                    </div>
+                    <div class="result-meta" id="result-meta" style="display: none;">
+                        <div class="meta-item">
+                            <span>Type:</span>
+                            <span class="value" id="result-type"></span>
+                        </div>
+                        <div class="meta-item">
+                            <span>Compile:</span>
+                            <span class="value" id="result-compile-time"></span>
+                        </div>
+                        <div class="meta-item">
+                            <span>Exec:</span>
+                            <span class="value" id="result-exec-time"></span>
+                        </div>
+                        <div class="meta-item">
+                            <span>Total:</span>
+                            <span class="value" id="result-total-time"></span>
+                        </div>
+                        <div class="meta-item" id="result-stats-item" style="display: none;">
+                            <span>Stats:</span>
+                            <span class="value" id="result-stats"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Analysis Tab -->
+            <div class="tab-content" id="tab-analysis">
+                <div id="analysis-content">
+                    <div style="color: var(--text-muted); text-align: center; padding: 2rem;">
+                        Click "Analyze" to see static analysis
+                    </div>
+                </div>
+            </div>
+
+            <!-- Options Tab -->
+            <div class="tab-content" id="tab-options">
+                <div class="options-grid">
+                    <div class="option-row">
+                        <span class="option-label">Sandbox Mode</span>
+                        <div class="toggle" id="opt-sandbox" onclick="toggleOption(this)"></div>
+                    </div>
+                    <div class="option-row">
+                        <span class="option-label">Strict Mode</span>
+                        <div class="toggle" id="opt-strict" onclick="toggleOption(this)"></div>
+                    </div>
+                    <div class="option-row">
+                        <span class="option-label">Optimize</span>
+                        <div class="toggle active" id="opt-optimize" onclick="toggleOption(this)"></div>
+                    </div>
+                    <div class="option-row">
+                        <span class="option-label">Max Operations</span>
+                        <input type="number" class="input-field" id="opt-maxops" value="100000" min="1000" step="10000">
+                    </div>
+                    <div class="option-row">
+                        <span class="option-label">Max Call Depth</span>
+                        <input type="number" class="input-field" id="opt-depth" value="100" min="10" step="10">
+                    </div>
+                    <div class="option-row">
+                        <span class="option-label">Timeout (ms)</span>
+                        <input type="number" class="input-field" id="opt-timeout" value="5000" min="100" step="1000">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Environment Tab -->
+            <div class="tab-content" id="tab-env">
+                <div class="result-label" style="margin-bottom: 0.5rem;">
+                    Environment Variables (JSON)
+                </div>
+                <textarea 
+                    id="env-editor" 
+                    class="env-editor" 
+                    placeholder='{"user": {"name": "Alice", "age": 30}, "items": [1, 2, 3]}'
+                    spellcheck="false"
+                >{}</textarea>
+                <div style="margin-top: 0.75rem; font-size: 0.75rem; color: var(--text-muted);">
+                    Variables defined here will be available in your expressions.
+                </div>
+            </div>
+
+            <!-- Functions Tab -->
+            <div class="tab-content" id="tab-functions">
+                <input 
+                    type="text" 
+                    class="functions-search" 
+                    placeholder="Search functions..."
+                    id="functions-search"
+                    oninput="filterFunctions()"
+                >
+                <div id="functions-list">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // State
+        let examples = [];
+        let functions = [];
+        let selectedExample = null;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadExamples();
+            await loadFunctions();
+            setupKeyboardShortcuts();
+            setupTabs();
+        });
+
+        // Load examples from API
+        async function loadExamples() {
+            try {
+                const res = await fetch('/api/examples');
+                examples = await res.json();
+                renderExamples();
+                
+                // Update count
+                let total = 0;
+                examples.forEach(cat => total += cat.examples.length);
+                document.getElementById('examples-count').textContent = total + '+';
+            } catch (err) {
+                console.error('Failed to load examples:', err);
+            }
+        }
+
+        // Load functions from API
+        async function loadFunctions() {
+            try {
+                const res = await fetch('/api/functions');
+                functions = await res.json();
+                renderFunctions();
+            } catch (err) {
+                console.error('Failed to load functions:', err);
+            }
+        }
+
+        // Render examples list
+        function renderExamples() {
+            const container = document.getElementById('examples-list');
+            container.innerHTML = '';
+
+            examples.forEach((category, catIdx) => {
+                const group = document.createElement('div');
+                group.className = 'category-group';
+                
+                const header = document.createElement('div');
+                header.className = 'category-header';
+                header.innerHTML = `
+                    <span class="category-icon">${category.icon}</span>
+                    <span>${category.name}</span>
+                    <span class="category-count">${category.examples.length}</span>
+                `;
+                header.onclick = () => {
+                    const exList = group.querySelector('.category-examples');
+                    exList.classList.toggle('expanded');
+                };
+
+                const exList = document.createElement('div');
+                exList.className = 'category-examples';
+
+                category.examples.forEach((ex, exIdx) => {
+                    const item = document.createElement('div');
+                    item.className = 'example-item';
+                    item.textContent = ex.name;
+                    item.onclick = (e) => {
+                        e.stopPropagation();
+                        selectExample(catIdx, exIdx);
+                    };
+                    exList.appendChild(item);
+                });
+
+                group.appendChild(header);
+                group.appendChild(exList);
+                container.appendChild(group);
+            });
+        }
+
+        // Select an example
+        function selectExample(catIdx, exIdx) {
+            const category = examples[catIdx];
+            const example = category.examples[exIdx];
+            selectedExample = example;
+
+            // Update selection UI
+            document.querySelectorAll('.example-item').forEach(el => el.classList.remove('selected'));
+            const items = document.querySelectorAll('.category-examples')[catIdx];
+            if (items && exIdx < items.children.length) {
+                items.children[exIdx].classList.add('selected');
+            }
+
+            // Set expression
+            document.getElementById('expression-input').value = example.expression;
+
+            // Set environment if any, otherwise clear it
+            if (example.env && Object.keys(example.env).length > 0) {
+                document.getElementById('env-editor').value = JSON.stringify(example.env, null, 2);
+            } else {
+                document.getElementById('env-editor').value = '{}';
+            }
+
+            // Show description
+            const descBox = document.getElementById('description-box');
+            descBox.style.display = 'block';
+            document.getElementById('desc-title').textContent = example.name;
+            document.getElementById('desc-text').textContent = example.description;
+            document.getElementById('desc-expected').textContent = example.expected;
+        }
+
+        // Render functions list
+        function renderFunctions() {
+            const container = document.getElementById('functions-list');
+            container.innerHTML = '';
+
+            // Group by category
+            const grouped = {};
+            functions.forEach(fn => {
+                if (!grouped[fn.category]) grouped[fn.category] = [];
+                grouped[fn.category].push(fn);
+            });
+
+            Object.keys(grouped).sort().forEach(cat => {
+                const group = document.createElement('div');
+                group.className = 'function-group';
+                
+                const title = document.createElement('div');
+                title.className = 'function-group-title';
+                title.textContent = cat;
+                group.appendChild(title);
+
+                grouped[cat].forEach(fn => {
+                    const item = document.createElement('div');
+                    item.className = 'function-item';
+                    item.innerHTML = `
+                        <div>
+                            <span class="function-name">${fn.name}</span>
+                            <span class="function-sig">${fn.signature}</span>
+                        </div>
+                        <div class="function-desc">${fn.description}</div>
+                    `;
+                    item.onclick = () => {
+                        document.getElementById('expression-input').value = fn.example;
+                        document.getElementById('description-box').style.display = 'none';
+                    };
+                    group.appendChild(item);
+                });
+
+                container.appendChild(group);
+            });
+        }
+
+        // Filter functions
+        function filterFunctions() {
+            const query = document.getElementById('functions-search').value.toLowerCase();
+            const items = document.querySelectorAll('.function-item');
+            const groups = document.querySelectorAll('.function-group');
+
+            items.forEach(item => {
+                const text = item.textContent.toLowerCase();
+                item.style.display = text.includes(query) ? '' : 'none';
+            });
+
+            groups.forEach(group => {
+                const visibleItems = Array.from(group.querySelectorAll('.function-item')).filter(item => item.style.display !== 'none');
+                group.style.display = visibleItems.length > 0 ? '' : 'none';
+            });
+        }
+
+        // Get options
+        // Only include optimize/strictMode when they differ from engine defaults
+        // to allow the engine to use its defaults when not explicitly changed
+        function getOptions() {
+            const opts = {
+                sandbox: document.getElementById('opt-sandbox').classList.contains('active'),
+                maxOps: parseInt(document.getElementById('opt-maxops').value) || 100000,
+                maxCallDepth: parseInt(document.getElementById('opt-depth').value) || 100,
+                timeoutMs: parseInt(document.getElementById('opt-timeout').value) || 5000,
+            };
+
+            // Only send strictMode if user explicitly enabled it (engine defaults to false)
+            const strictMode = document.getElementById('opt-strict').classList.contains('active');
+            if (strictMode) {
+                opts.strictMode = true;
+            }
+
+            // Only send optimize if user explicitly disabled it (engine defaults to true)
+            const optimize = document.getElementById('opt-optimize').classList.contains('active');
+            if (!optimize) {
+                opts.optimize = false;
+            }
+
+            return opts;
+        }
+
+        // Get environment
+        function getEnv() {
+            try {
+                const text = document.getElementById('env-editor').value.trim();
+                return text ? JSON.parse(text) : {};
+            } catch (err) {
+                return {};
+            }
+        }
+
+        // Run expression
+        async function runExpression() {
+            const expression = document.getElementById('expression-input').value.trim();
+            if (!expression) return;
+
+            const output = document.getElementById('result-output');
+            output.innerHTML = '<span class="loading"></span>';
+            document.getElementById('result-meta').style.display = 'none';
+
+            try {
+                const res = await fetch('/api/eval', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        expression,
+                        env: getEnv(),
+                        options: getOptions(),
+                    }),
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    output.className = 'result-value success';
+                    output.textContent = formatValue(data.result);
+                    
+                    document.getElementById('result-meta').style.display = 'flex';
+                    document.getElementById('result-type').textContent = data.resultType;
+                    document.getElementById('result-compile-time').textContent = data.compileTime;
+                    document.getElementById('result-exec-time').textContent = data.execTime;
+                    document.getElementById('result-total-time').textContent = data.totalTime;
+                    const statsItem = document.getElementById('result-stats-item');
+                    if (data.stats) {
+                        statsItem.style.display = '';
+                        document.getElementById('result-stats').textContent =
+                            `compiles=${data.stats.compiles} evals=${data.stats.evals} errors=${data.stats.eval_errors}`;
+                    } else {
+                        statsItem.style.display = 'none';
+                    }
+                } else {
+                    output.className = 'result-value error';
+                    output.textContent = data.error;
+                }
+
+                // Switch to result tab
+                switchTab('result');
+
+            } catch (err) {
+                output.className = 'result-value error';
+                output.textContent = 'Request failed: ' + err.message;
+            }
+        }
+
+        // Analyze expression
+        async function analyzeExpression() {
+            const expression = document.getElementById('expression-input').value.trim();
+            if (!expression) return;
+
+            const content = document.getElementById('analysis-content');
+            content.innerHTML = '<div style="text-align:center"><span class="loading"></span></div>';
+
+            try {
+                const res = await fetch('/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ expression }),
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    content.innerHTML = `
+                        <div class="analysis-grid">
+                            <div class="analysis-item">
+                                <span class="analysis-label">Variables</span>
+                                <div class="analysis-list">
+                                    ${data.variables?.length ? data.variables.map(v => `<span class="analysis-tag">${v}</span>`).join('') : '<span class="analysis-value">none</span>'}
+                                </div>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Functions</span>
+                                <div class="analysis-list">
+                                    ${data.functions?.length ? data.functions.map(f => `<span class="analysis-tag">${f}</span>`).join('') : '<span class="analysis-value">none</span>'}
+                                </div>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Operators</span>
+                                <div class="analysis-list">
+                                    ${data.operators?.length ? data.operators.map(o => `<span class="analysis-tag">${o}</span>`).join('') : '<span class="analysis-value">none</span>'}
+                                </div>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Complexity</span>
+                                <span class="analysis-value">${data.complexity}</span>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Pure</span>
+                                <span class="analysis-value ${data.isPure ? 'bool-true' : 'bool-false'}">${data.isPure}</span>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Node Count</span>
+                                <span class="analysis-value">${data.nodeCount}</span>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">AST Depth</span>
+                                <span class="analysis-value">${data.depth}</span>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Has Assignment (let)</span>
+                                <span class="analysis-value ${data.hasAssignment ? 'bool-true' : 'bool-false'}">${data.hasAssignment}</span>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Has Side Effects</span>
+                                <span class="analysis-value ${data.hasSideEffects ? 'bool-true' : 'bool-false'}">${data.hasSideEffects}</span>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Uses Optional Chain</span>
+                                <span class="analysis-value ${data.usesOptionalChaining ? 'bool-true' : 'bool-false'}">${data.usesOptionalChaining}</span>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Uses Nil Coalescing</span>
+                                <span class="analysis-value ${data.usesNilCoalescing ? 'bool-true' : 'bool-false'}">${data.usesNilCoalescing}</span>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Estimated Cost</span>
+                                <span class="analysis-value">${data.estimatedCost}</span>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    content.innerHTML = `<div style="color: var(--error);">${data.error}</div>`;
+                }
+
+                switchTab('analysis');
+
+            } catch (err) {
+                content.innerHTML = `<div style="color: var(--error);">Request failed: ${err.message}</div>`;
+            }
+        }
+
+        // Profile expression
+        async function profileExpression() {
+            const expression = document.getElementById('expression-input').value.trim();
+            if (!expression) return;
+
+            const output = document.getElementById('result-output');
+            output.innerHTML = '<span class="loading"></span>';
+
+            try {
+                const res = await fetch('/api/profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        expression,
+                        env: getEnv(),
+                    }),
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    output.className = 'result-value success';
+                    output.innerHTML = `
+                        <div>Result: ${formatValue(data.result)}</div>
+                        <div style="margin-top: 0.5rem; border-top: 1px solid var(--border); padding-top: 0.5rem; font-size: 0.8125rem; color: var(--text-secondary);">
+                            <div>Type: <span style="color: var(--cyan)">${data.resultType}</span></div>
+                            <div>Compile: <span style="color: var(--cyan)">${data.compileTime}</span></div>
+                            <div>Exec: <span style="color: var(--cyan)">${data.execTime}</span></div>
+                            <div>Ops Executed: <span style="color: var(--orange)">${data.opsExecuted}</span></div>
+                            <div>Max Stack: <span style="color: var(--purple)">${data.maxStackDepth}</span></div>
+                        </div>
+                    `;
+                } else {
+                    output.className = 'result-value error';
+                    output.textContent = data.error;
+                }
+
+                switchTab('result');
+
+            } catch (err) {
+                output.className = 'result-value error';
+                output.textContent = 'Request failed: ' + err.message;
+            }
+        }
+
+        // Simplify expression
+        async function simplifyExpression() {
+            const expression = document.getElementById('expression-input').value.trim();
+            if (!expression) return;
+
+            try {
+                const res = await fetch('/api/simplify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ expression }),
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    document.getElementById('expression-input').value = data.result;
+                } else {
+                    alert('Simplify error: ' + data.error);
+                }
+
+            } catch (err) {
+                alert('Request failed: ' + err.message);
+            }
+        }
+
+        async function inlineExpression() {
+            const expression = document.getElementById('expression-input').value.trim();
+            if (!expression) return;
+
+            try {
+                const res = await fetch('/api/inline', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ expression }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('expression-input').value = data.result;
+                } else {
+                    alert('Inline error: ' + data.error);
+                }
+            } catch (err) {
+                alert('Request failed: ' + err.message);
+            }
+        }
+
+        async function validateExpression() {
+            const expression = document.getElementById('expression-input').value.trim();
+            if (!expression) return;
+
+            const output = document.getElementById('result-output');
+            try {
+                const res = await fetch('/api/validate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ expression }),
+                });
+                const data = await res.json();
+                if (data.valid) {
+                    output.className = 'result-value success';
+                    output.textContent = 'Valid syntax';
+                } else {
+                    output.className = 'result-value error';
+                    output.textContent = data.error || 'Invalid expression';
+                }
+                document.getElementById('result-meta').style.display = 'none';
+                switchTab('result');
+            } catch (err) {
+                output.className = 'result-value error';
+                output.textContent = 'Request failed: ' + err.message;
+            }
+        }
+
+        async function typecheckExpression() {
+            const expression = document.getElementById('expression-input').value.trim();
+            if (!expression) return;
+
+            const content = document.getElementById('analysis-content');
+            content.innerHTML = '<div style="text-align:center"><span class="loading"></span></div>';
+
+            try {
+                const res = await fetch('/api/typecheck', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ expression, env: getEnv() }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    content.innerHTML = `
+                        <div class="analysis-grid">
+                            <div class="analysis-item">
+                                <span class="analysis-label">Valid</span>
+                                <span class="analysis-value ${data.valid ? 'bool-true' : 'bool-false'}">${data.valid}</span>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Variables</span>
+                                <div class="analysis-list">
+                                    ${data.variables?.length ? data.variables.map(v => `<span class="analysis-tag">${v}</span>`).join('') : '<span class="analysis-value">none</span>'}
+                                </div>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Functions</span>
+                                <div class="analysis-list">
+                                    ${data.functions?.length ? data.functions.map(f => `<span class="analysis-tag">${f}</span>`).join('') : '<span class="analysis-value">none</span>'}
+                                </div>
+                            </div>
+                            <div class="analysis-item">
+                                <span class="analysis-label">Unbound (missing in env)</span>
+                                <div class="analysis-list">
+                                    ${data.unbound?.length ? data.unbound.map(v => `<span class="analysis-tag">${v}</span>`).join('') : '<span class="analysis-value">none</span>'}
+                                </div>
+                            </div>
+                            ${data.error ? `<div class="analysis-item"><span class="analysis-label">Error</span><span class="analysis-value" style="color:var(--error)">${data.error}</span></div>` : ''}
+                        </div>
+                    `;
+                } else {
+                    content.innerHTML = `<div style="color: var(--error);">${data.error}</div>`;
+                }
+                switchTab('analysis');
+            } catch (err) {
+                content.innerHTML = `<div style="color: var(--error);">Request failed: ${err.message}</div>`;
+            }
+        }
+
+        // Clear editor
+        function clearEditor() {
+            document.getElementById('expression-input').value = '';
+            document.getElementById('description-box').style.display = 'none';
+            document.getElementById('result-output').innerHTML = '<span style="color: var(--text-muted)">Run an expression to see results</span>';
+            document.getElementById('result-output').className = 'result-value';
+            document.getElementById('result-meta').style.display = 'none';
+            document.querySelectorAll('.example-item').forEach(el => el.classList.remove('selected'));
+            selectedExample = null;
+        }
+
+        // Toggle option
+        function toggleOption(el) {
+            el.classList.toggle('active');
+        }
+
+        // Format value for display
+        function formatValue(val) {
+            if (val === null || val === undefined) return 'nil';
+            if (typeof val === 'string') return JSON.stringify(val);
+            if (typeof val === 'object') return JSON.stringify(val, null, 2);
+            return String(val);
+        }
+
+        // Setup tabs
+        function setupTabs() {
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.onclick = () => switchTab(tab.dataset.tab);
+            });
+        }
+
+        // Switch tab
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            document.querySelector(`.tab[data-tab="${tabId}"]`).classList.add('active');
+            document.getElementById(`tab-${tabId}`).classList.add('active');
+        }
+
+        // Keyboard shortcuts
+        function setupKeyboardShortcuts() {
+            document.getElementById('expression-input').addEventListener('keydown', e => {
+                if (e.ctrlKey && e.key === 'Enter') {
+                    e.preventDefault();
+                    runExpression();
+                }
+            });
+        }
+    </script>
+</body>
+</html>
+

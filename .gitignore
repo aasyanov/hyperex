@@ -1,0 +1,57 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries / profiles
+*.test
+*.prof
+*.coverprofile
+benchmark.txt
+quality.result
+quality.ps1
+quality.sh
+
+# Coverage artifacts (never commit; keep *_test.go source)
+*.out
+cover.out
+coverage.out
+coverage.txt
+coverprofile
+*-cov
+*-coverage
+*-coverage.out
+*coverage.out
+coverage_*
+*.cover
+/cov
+/cover
+/coverage
+cov/
+cover/
+coverage/
+
+# Profiles / ad-hoc reports
+profiles/
+a-report-*.md
+dist/
+
+# Fuzz corpus (large)
+**/testdata/fuzz/
+
+# Cursor / IDE
+.cursor/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/

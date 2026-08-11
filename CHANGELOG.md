@@ -2,85 +2,55 @@
 
 All notable changes to `github.com/aasyanov/hyperex` are documented here.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [Unreleased]
 
-### Changed
-- Standalone module path `github.com/aasyanov/hyperex` (`go.mod`); imports updated from `smp/package/hyperex`.
-- Ship-kit unified with org canon: identical `.gitignore`, `.golangci.yml`, MIT `LICENSE`, and `.github/workflows/ci.yml` (lint + OS×Go matrix + fuzz discover + bench/pprof on main).
-- Agent guidance moved to gitignored `.cursor/rules/`; removed `llm.md` and ad-hoc `a-report-*` tooling where present.
-- Published docs rewritten to English: `README.md` (honest identity/install/quick start), `LANGUAGE.md` (normative spec), `AUDIT.md` / `QUALITY.md` / `examples/**` paths for the standalone module.
-- Gate M proof table recorded in `AUDIT.md` §8 and `.cursor/rules/hyperex.mdc`.
-- Renamed `a_*_test.go` → `unit_test.go` / `node_test.go` / `bench_test.go` (no lexical `a_` test prefixes).
-- Gate 2 craft: `names.go` for repeated language identifiers (goconst), wired optimizer option flags in `Engine.New`, removed unused private helpers, golangci-lint clean.
-- Coverage raised to ≥90% (`gate_cover_test.go`); fuzz pipeline uses tighter sandbox + eval context timeout.
-- **`Value.Equal` / `NewValue`:** no longer panic on function values (`*builtinFunc`); `NewValue` preserves Func kind for builtins/closures. Optimize fuzz compares successful results only (folds may mask UndefinedError).
-- CI coverage excludes `examples/` (`package main` demos have no tests and were diluting the profile to ~79%); examples still `go build` in CI.
-- **Optimizer:** do not apply `0+x` / `x+0` / `x*0` / `1*x` identities unless the operand is definitely numeric — `+` is also string concat (`0+"hello"` → `"0hello"`).
-- **Optimizer:** removed incorrect `x && true → x` and `x || false → x` folds — `&&`/`||` return an operand (`1 && true` → `true`, not `1`).
-- **Optimizer:** `~~x → x` only for integer x (`~` uses `Int()`; `~~0.1` → `0`, `~~true` → `1`).
-- **Optimizer:** `x**0` / `x**1` / `x**2` strength reduction only for numeric x (`"hello"**1` must not become `"hello"`).
-### Fixed
+## [1.0.0] — 2026-08-11
 
-- **Pipe vs bitwise `|`.** `ident | ident` is now PIPE when the right-hand name matches a
-  default builtin (`sum`, `unique`, `filter`, …). Integer/float literals on either side
-  never pipe. `Analysis.Warnings` reports true ambiguity (`x | y`) and builtin-name pipe
-  choices. See LANGUAGE.md §9.
-- **Range `..` precedence.** `..` now respects `minPrec` and parses RHS at prec+1
-  (left-assoc, prec 13): `1+2..4` → `1+(2..4)`, `1..2+3` → `(1..2)+3`, `1..2..3` → `(1..2)..3`.
-- **Destructure `;`.** Object/array destructuring may omit `;` like plain `let`
-  (`Body = Value` when final).
+First public standalone release of `github.com/aasyanov/hyperex`. Greenfield surface: compile-once / eval-many expression engine with context-first Eval, best-effort sandbox, and a narrowed public façade (Wave 2–3). Covered by Gate M proofs and Gate 5 craft bars (cover ≥90%, fuzz, lint).
 
 ### Added
 
-- **[LANGUAGE.md](LANGUAGE.md)** — normative HyperEx expression language specification
-  (lexicon, operators, forms, 76 builtins, pipe vs bitwise, pitfalls). Russian prose;
-  code identifiers English. Wins over README on syntax/semantics conflicts.
-- **`examples/`** under the package: interactive `playground/` (moved from `backend2/examples/hyperex`)
-  plus cookbook recipes with a public-API coverage matrix (`examples/README.md`).
-  Old path is a redirect README only.
-- **Predicate forms for `all` / `any` / `none` / `one`:** optional second `kindFunc` argument
-  (`pred(elem)` / `pred(elem, index)`), same callback pattern as `filter`/`map`. One-arg
-  truthiness forms unchanged. Empty-array semantics preserved. See LANGUAGE.md §8.4;
-  recipe `examples/predicates/`.
-- **`Analysis.Warnings`** — stable English diagnostics for ambiguous `|` and builtin-name pipe.
+- **[LANGUAGE.md](LANGUAGE.md)** — normative English expression language specification (lexicon, operators, forms, builtins, pipe vs bitwise, pitfalls). Wins over README on syntax/semantics conflicts.
+- **[AUDIT.md](AUDIT.md)** — threat model, trust boundaries, numeric/sandbox contracts, Gate M proof table.
+- **`examples/`** — interactive `playground/` plus cookbook recipes with a public-API coverage matrix ([examples/README.md](examples/README.md)).
+- Predicate forms for `all` / `any` / `none` / `one`: optional second `kindFunc` (`pred(elem)` / `pred(elem, index)`); truthiness forms unchanged.
+- `Analysis.Warnings` — stable English diagnostics for ambiguous `|` and builtin-name pipe.
+- `example_test.go` — runnable Examples for Eval, Compile+Program.Eval, WithFunction, sandbox, ExtractVariables, Analyze, Simplify.
+- Ship-kit: `.gitignore`, `.golangci.yml`, MIT `LICENSE`, `.github/workflows/ci.yml` (lint + OS×Go matrix + fuzz + bench/pprof on main).
+- Gate M package digest under gitignored `.cursor/rules/` (`hyperex.mdc` proof table).
+
+### Fixed
+
+- **Pipe vs bitwise `|`.** `ident | ident` is PIPE when the RHS name matches a default builtin; integer/float literals never pipe. See LANGUAGE.md §9.
+- **Range `..` precedence.** Left-assoc, prec 13 with `minPrec`: `1+2..4` → `1+(2..4)`, `1..2+3` → `(1..2)+3`.
+- **Destructure `;`.** Object/array destructuring may omit `;` like plain `let`.
+- **`Value.Equal` / `NewValue`:** no panic on function values (`*builtinFunc`); `NewValue` preserves Func kind for builtins/closures.
+- **Optimizer correctness** (aligned with LANGUAGE operand / coercion rules):
+  - no `0+x` / `x+0` / `x*0` / `1*x` unless the operand is definitely numeric (`+` is also string concat);
+  - no `x && true → x` / `x || false → x` (`&&`/`||` return an operand);
+  - `~~x → x` only for integer x (`~` uses `Int()`);
+  - `x**0` / `x**1` / `x**2` strength reduction only for numeric x.
+
+### Changed
+
+- Standalone module path `github.com/aasyanov/hyperex` (was in-tree under `smp` / `backend2/package/hyperex`).
+- Published docs English-only (`README`, `LANGUAGE`, `AUDIT`, `QUALITY`, `examples/**`); agent notes in gitignored `.cursor/rules/` (no `llm.md` / `a-report-*` / quality wrappers).
+- Test layout: `a_*_test.go` → `unit_test.go` / `node_test.go` / `bench_test.go`; coverage lift via `gate_cover_test.go`.
+- CI coverage excludes `examples/` (`package main` demos); examples still `go build` in CI.
+- Gate 2 craft: `names.go` for language identifiers; optimizer option flags wired in `Engine.New`; golangci-lint clean.
 
 ### Changed (Wave 3 — breaking)
 
-- **Public API narrowing.** Unexported low-level pipeline types: `Lexer`, `Parser`/`NewParser`,
-  `Token*`, `Opcode`, `Instruction`, `Bytecode`, `Compiler`, `VM` → `execVM`, `Closure`,
-  `Optimizer`, `BuiltinFunc`, `DefaultBuiltins`, `IsSideEffectFree`, and concrete AST nodes
-  (`IntLit` → `intLit`, …). Public façade remains: `Engine`, `Program`, `Value`, Options,
-  errors, and transforms/analytics (`Analyze`, `Simplify`, `Extract*`, `Walk`, `Transform`,
-  `Node`, `TypeChecker`, `ASTToString`, …). No public `Parse`.
-- **`ParseError.Line()` / `Column()`** accessors restore structured location after `Token` was unexported.
+- **Public API narrowing.** Unexported: `Lexer`, `Parser`/`NewParser`, `Token*`, `Opcode`, `Instruction`, `Bytecode`, `Compiler`, `VM` → `execVM`, `Closure`, `Optimizer`, `BuiltinFunc`, `DefaultBuiltins`, `IsSideEffectFree`, concrete AST (`IntLit` → `intLit`, …). Façade: `Engine`, `Program`, `Value`, Options, errors, transforms/analytics. No public `Parse`.
+- **`ParseError.Line()` / `Column()`** restore structured location after `Token` was unexported.
 
 ### Changed (Wave 2 — breaking)
 
-- **Context-first Eval API.** All Eval surfaces now take `context.Context` as the first parameter:
-  - `Eval(ctx, expr, env...)`, `MustEval(ctx, …)`, typed `EvalBool`/`EvalInt`/`EvalFloat`/`EvalString(ctx, …)`
-  - `Engine.Eval` / `MustEval` / typed variants — same shape
-  - `Program.Eval(ctx, env)` / typed `Program.Eval*(ctx, env)` — env is `any` (same `toEnvMap` rules as Engine)
-  - `ProfileExpr(ctx, expr, env)`, `Program.Profile(ctx, env)`
-- **No Background wrappers** on the primary API — pass `context.Background()` at the call site.
-- **Env symmetry on Program.Eval** — accepts nil, maps, and struct/*struct (not map-only).
+- **Context-first Eval.** All Eval surfaces take `context.Context` first; no Background wrappers on the primary API.
+- **Env symmetry on `Program.Eval`** — nil, maps, struct/*struct (same `toEnvMap` rules as Engine).
 - **`Engine.Stats()`** — lock-free snapshot: `Compiles`, `Evals`, `EvalErrors`.
-- **Cancellation:** `ctx.Done()` during vm → `errors.Is(err, ErrOperationCancelled)`.
-- **Timeout precedence:** sandbox `WithTimeout` and ctx deadline both apply; whichever fires first wins.
-- **Strict typed helpers:** `WithStrictMode(true)` → typed Eval* return `ErrInvalidConversion` instead of silent coerce.
-- **tagreg:** calc entries store `compileErr`; `Registry.CompileError(id)` for diagnostics.
-
-### Documentation
-
-- Wave 3: docs synced to narrowed public surface (`README`, `doc.go`, `llm.md`, `AUDIT.md`, `.cursor/rules/hyperex.mdc`) — no invented `NewParser` / `Lexer` / `VM` / … as public API.
-- Added package `LICENSE` (MIT, Copyright (c) 2026 Anton Syanov).
-- Added `llm.md` with CRITICAL RULES for agents (sandbox honesty, Value construction, `errors.Is`, compile-once/eval-many, numeric edges, non-goals).
-- Added `example_test.go` with runnable Examples for Eval, Compile+Program.Eval, WithFunction, sandbox, ExtractVariables, Analyze, Simplify.
-- Added `.cursor/rules/` agent constitution (gates, godoc, errors, options, testing, package digest, documentation).
-- Refreshed `AUDIT.md` (English threat model, trust boundaries, Gate M checklist, `Option` vs `CompileOption`).
-- Fixed `doc.go` honesty bugs: removed BatchEval claims; prior docs incorrectly limited `Program.Eval` to maps (Wave 2 restored env symmetry).
-- README uplift: What HyperEx Is / Is Not; Critical contracts pointers; `RegisterFunc` → `WithFunc`; sandbox on Engine not Compile; badge/bench count fixes.
-- Final sync to live API: singular `Option` / `CompileOption`.
-
-### Notes for API / Quality waves
-
-- Footprint / mass test renames applied where API renames broke tests so Examples could run (`DebugMode` → `SetDebugModeForTest`, `Value.Index(int)`).
+- **Cancellation / timeouts:** `ctx.Done()` → `ErrOperationCancelled`; sandbox `WithTimeout` and ctx deadline — whichever fires first.
+- **Strict typed helpers:** `WithStrictMode(true)` → `ErrInvalidConversion` instead of silent coerce.

@@ -3,7 +3,7 @@
 Stable guarantees, non-goals, and invariants for `github.com/aasyanov/hyperex`.
 Use this document (with [LANGUAGE.md](LANGUAGE.md), [doc.go](doc.go), and [CHANGELOG.md](CHANGELOG.md)) so agents do not rediscover or invent contracts.
 
-Standalone module. Production code is **stdlib-only**. Greenfield API changes are allowed; sync docs in the same change.
+Standalone module **v1.0.0**. Production code is **stdlib-only**. Greenfield API changes after 1.0.0 require a new major (or explicit pre-release); sync docs in the same change.
 
 **Language syntax & semantics** are normative in [LANGUAGE.md](LANGUAGE.md). This file covers threat model, numeric edge contracts, and API invariants of the engine.
 

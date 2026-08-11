@@ -21,8 +21,8 @@ import (
 var webFS embed.FS
 
 const (
-	Version   = "2.0.0"
-	BuildDate = "2026-08-10"
+	Version   = "1.0.0"
+	BuildDate = "2026-08-11"
 )
 
 var config Config

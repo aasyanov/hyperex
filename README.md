@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Changelog](https://img.shields.io/badge/Changelog-CHANGELOG-blue)](CHANGELOG.md)
 
-Compile-once / eval-many expression engine: Pratt parse → optimize → bytecode VM. Stdlib-only. Go **1.24+**.
+Compile-once / eval-many expression engine: Pratt parse → optimize → bytecode VM. Stdlib-only. Go **1.24+**. Current release: **[v1.0.0](CHANGELOG.md)**.
 
 ```
 go get github.com/aasyanov/hyperex

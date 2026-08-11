@@ -1,7 +1,7 @@
 # HyperEx Language Specification
 
 > Normative English specification of the HyperEx expression language for `github.com/aasyanov/hyperex`.  
-> Document version: 2026-08.  
+> Document version: 1.0.0 (2026-08).  
 > Number/sandbox contracts: [AUDIT.md](AUDIT.md). Engine API: [doc.go](doc.go). History: [CHANGELOG.md](CHANGELOG.md).
 
 This document describes **expression syntax and semantics**. Host options (`WithSandbox`, `WithStrictMode`, `WithOperator`, etc.) are **not language syntax**; see §11.

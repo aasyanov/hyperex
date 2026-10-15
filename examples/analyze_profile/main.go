@@ -1,4 +1,4 @@
-// Analyze and profile hyperex expressions (static + runtime).
+// Static Analyze + runtime Profile (package and Program surfaces).
 package main
 
 import (
@@ -12,7 +12,6 @@ func main() {
 	ctx := context.Background()
 	expr := `let total = sum(items); total > threshold && len(items) > 0`
 
-	// --- Static analysis ---
 	analysis, err := hyperex.Analyze(expr)
 	must(err)
 	fmt.Println("=== Analyze ===")
@@ -29,7 +28,6 @@ func main() {
 	fmt.Printf("UsesNilCoalescing:    %v\n", analysis.UsesNilCoalescing)
 	fmt.Printf("EstimatedCost:  %d\n", analysis.EstimatedCost)
 
-	// Complexity constants conceptually via String()
 	fmt.Println("\n=== Complexity classes ===")
 	for _, c := range []hyperex.Complexity{
 		hyperex.ComplexityConstant,
@@ -41,12 +39,26 @@ func main() {
 		fmt.Printf("  %d -> %s\n", c, c.String())
 	}
 
+	fmt.Println("\n=== Analysis.Warnings (match Warn* constants) ===")
+	// Identifier | identifier is treated as bitwise OR; pipe needs a call shape.
+	w, err := hyperex.Analyze(`flags | mask`)
+	must(err)
+	fmt.Printf("  flags | mask => %v\n", w.Warnings)
+	fmt.Printf("  match WarnAmbiguousBitwiseOr: %v\n",
+		len(w.Warnings) == 1 && w.Warnings[0] == hyperex.WarnAmbiguousBitwiseOr)
+
+	// RHS identifier that matches a builtin name → pipe heuristic warning.
+	w2, err := hyperex.Analyze(`xs | sum`)
+	must(err)
+	fmt.Printf("  xs | sum     => %v\n", w2.Warnings)
+	fmt.Printf("  match WarnBuiltinNamePipe: %v\n",
+		len(w2.Warnings) == 1 && w2.Warnings[0] == hyperex.WarnBuiltinNamePipe)
+
 	env := map[string]any{
 		"items":     []any{1, 2, 3, 4},
 		"threshold": 5,
 	}
 
-	// --- ProfileExpr (compile + run) ---
 	profile, result, err := hyperex.ProfileExpr(ctx, expr, env)
 	must(err)
 	fmt.Println("\n=== ProfileExpr ===")
@@ -57,7 +69,6 @@ func main() {
 	fmt.Printf("OpsCount:      %d\n", profile.OpsCount)
 	fmt.Printf("MaxStackDepth: %d\n", profile.MaxStackDepth)
 
-	// --- Program.Analyze / Program.Profile after Compile ---
 	prog, err := hyperex.Compile(expr)
 	must(err)
 	pa := prog.Analyze()

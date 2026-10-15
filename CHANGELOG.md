@@ -7,54 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [1.5.0] — 2026-10-15
 
-- **README** — rewritten in sibling style (Problem → Architecture → How it works → Quick start → API/contracts → Benchmarks → Quality); dual-OS CI bench medians retained.
-
-## [1.0.0] — 2026-08-11
-
-First public standalone release of `github.com/aasyanov/hyperex`. Greenfield surface: compile-once / eval-many expression engine with context-first Eval, best-effort sandbox, and a narrowed public façade (Wave 2–3). Covered by Gate M proofs and Gate 5 craft bars (cover ≥90%, fuzz, lint).
-
-### Added
-
-- **[LANGUAGE.md](LANGUAGE.md)** — normative English expression language specification (lexicon, operators, forms, builtins, pipe vs bitwise, pitfalls). Wins over README on syntax/semantics conflicts.
-- **[AUDIT.md](AUDIT.md)** — threat model, trust boundaries, numeric/sandbox contracts, Gate M proof table.
-- **`examples/`** — interactive `playground/` plus cookbook recipes with a public-API coverage matrix ([examples/README.md](examples/README.md)).
-- Predicate forms for `all` / `any` / `none` / `one`: optional second `kindFunc` (`pred(elem)` / `pred(elem, index)`); truthiness forms unchanged.
-- `Analysis.Warnings` — stable English diagnostics for ambiguous `|` and builtin-name pipe.
-- `example_test.go` — runnable Examples for Eval, Compile+Program.Eval, WithFunction, sandbox, ExtractVariables, Analyze, Simplify.
-- Ship-kit: `.gitignore`, `.golangci.yml`, MIT `LICENSE`, `.github/workflows/ci.yml` (lint + OS×Go matrix + fuzz + bench/pprof on main).
-- Gate M package digest under gitignored `.cursor/rules/` (`hyperex.mdc` proof table).
+Studio / SCADA / numeric surface since `v1.0.0`. **SemVer note:** this minor includes breaking removals (module path stays `github.com/aasyanov/hyperex`; no `/v2`). Call sites using removed symbols must migrate before upgrading.
 
 ### Fixed
 
-- **Pipe vs bitwise `|`.** `ident | ident` is PIPE when the RHS name matches a default builtin; integer/float literals never pipe. See LANGUAGE.md §9.
-- **Range `..` precedence.** Left-assoc, prec 13 with `minPrec`: `1+2..4` → `1+(2..4)`, `1..2+3` → `(1..2)+3`.
-- **Destructure `;`.** Object/array destructuring may omit `;` like plain `let`.
-- **`Value.Equal` / `NewValue`:** no panic on function values (`*builtinFunc`); `NewValue` preserves Func kind for builtins/closures.
-- **Optimizer correctness** (aligned with LANGUAGE operand / coercion rules):
-  - no `0+x` / `x+0` / `x*0` / `1*x` unless the operand is definitely numeric (`+` is also string concat);
-  - no `x && true → x` / `x || false → x` (`&&`/`||` return an operand);
-  - `~~x → x` only for integer x (`~` uses `Int()`);
-  - `x**0` / `x**1` / `x**2` strength reduction only for numeric x.
+- SCADA benches (`BenchmarkSCADA_Secure_*` / TimeHour / QualifiedMap): disable wall-clock `Timeout` via `NewSecureCalc(WithTimeout(0))` so GC STW cannot flake the 25ms SecureCalc preset during long `-bench` runs. Alloc floors unchanged; product presets still use 25ms / 10ms.
+
+### Removed
+
+- **Breaking — removed APIs / language aliases:**
+  - Builtin alias `size` (use `len`); catalog is **100** names
+  - Keyword `null` (use `nil` only; `null` is a normal identifier)
+  - Engine option `WithEnv` (use `WithTypeCheck`)
+  - `TypeChecker.WithEnvType` varargs façade (use `WithStructEnv` / `WithVar` / `WithEnvTypes`)
+  - Unused taxonomy sentinels never returned by Eval: `ErrInvalidOperation`, `ErrNilDereference`, `ErrNotIterable`, `ErrKeyNotFound`, `ErrIntegerOverflow`
+
+### Added
+
+- **Studio DX** — `Tokenize` / `Token` / `TokenKind`; public `Parse(expr) (Node, error)`; `ExtractVariablesOpts` + `ExtractMemberRoots()`; `WarnAmbiguousBitwiseOr` / `WarnBuiltinNamePipe`; `WithMaxSourceBytes` + `ErrSourceTooLarge`; `RuntimeError.Offset` / `Line` / `Column` (0 = unknown).
+- **`WithNumericMode`** — `NumericDefault` (int-preserving) or `NumericFloat64` (`1/2` → `0.5`). String `+` and time/duration ops unchanged.
+- **`WithNonFinite`** — `NonFiniteAllow` (default) or `NonFiniteError` (`errors.Is(…, ErrNonFinite)`).
+- **`Program.ResultHint()`** / **`Program.EvalValue(ctx, env) (Value, error)`** — compile As* hint; Value without `Interface()` boxing (`Eval` kept).
+- **First-class `time` / `duration`** — `NewValue(time.Time|time.Duration)`, constructors `Time` / `Duration`; temporal operators (`t±d`, `t-t`→`d`, `d±d`, `d*n` / `d/n`); builtins `timeUTC`, `timeUnix*`, calendar extractors, `timeAdd`, `duration*` / `dur*`. No `now()` builtin. Secure coerce accepts `time.Time` / `time.Duration`.
+- **`BuiltinNames()` / `IsBuiltin(name)`** — public sorted name discovery.
+- **Secure presets** — `PresetSecureCalc` / `PresetSecureAuto`, `NewSecureCalc` / `NewSecureAuto` (include `NumericFloat64` + `NonFiniteError`).
+- **Quality helpers** — builtins `v` / `q` / `isGood` / `isBad` / `isUncertain` / `withQ`; exported `QualityClass*` masks. No arithmetic auto-unwrap.
+- **`WithSafeFunction` / `WithSafeFunctionMeta` / `SafeFuncMeta`** — host funcs taxed against MaxOps; `WithFunction` remains trusted.
+- **Examples / SCADA benches** — `scada_secure`, `scada_quality`, `scada_hotpath`; `BenchmarkSCADA_*` in `bench_scada_test.go`. Cookbook matrix raised (`numeric`, merged typecheck into `validate_extract`, Studio / `ResultHint` / `Warn*` coverage) — see [examples/README.md](examples/README.md).
 
 ### Changed
 
-- Standalone module path `github.com/aasyanov/hyperex` (was in-tree under `smp` / `backend2/package/hyperex`).
-- Published docs English-only (`README`, `LANGUAGE`, `AUDIT`, `QUALITY`, `examples/**`); agent notes in gitignored `.cursor/rules/` (no `llm.md` / `a-report-*` / quality wrappers).
-- Test layout: `a_*_test.go` → `unit_test.go` / `node_test.go` / `bench_test.go`; coverage lift via `gate_cover_test.go`.
-- CI coverage excludes `examples/` (`package main` demos); examples still `go build` in CI.
-- Gate 2 craft: `names.go` for language identifiers; optimizer option flags wired in `Engine.New`; golangci-lint clean.
+- **`Tokenize`**: operator / punctuation / keyword tokens fill `Token.Lit` from the glyph when the lexer leaves `Value` empty (highlighter-friendly).
+- **`keys` / `values`** — sorted key order (determinism; previously unspecified map iteration).
+- **`RuntimeError`** — optional additive `Expected` / `Got` on strict As* failures (`Error()` string unchanged for Op/Left/Right paths).
+- **Sandbox limits cache** — allow/deny maps cached at `New`; Eval only refreshes Timeout deadline (~345→~88 B/op on Secure Simple; no API change).
+- **Docs / layout** — published surface is README + LANGUAGE + CHANGELOG; numeric/sandbox/Secure contracts in LANGUAGE §3.5 / §11; internal test/source split into concept files (no API change); ship-kit / CI hygiene; README Quality notes honest fuzz count and reproduce commands.
 
-### Changed (Wave 3 — breaking)
+## [1.0.0] — 2026-08-11
 
-- **Public API narrowing.** Unexported: `Lexer`, `Parser`/`NewParser`, `Token*`, `Opcode`, `Instruction`, `Bytecode`, `Compiler`, `VM` → `execVM`, `Closure`, `Optimizer`, `BuiltinFunc`, `DefaultBuiltins`, `IsSideEffectFree`, concrete AST (`IntLit` → `intLit`, …). Façade: `Engine`, `Program`, `Value`, Options, errors, transforms/analytics. No public `Parse`.
-- **`ParseError.Line()` / `Column()`** restore structured location after `Token` was unexported.
+First public standalone release of `github.com/aasyanov/hyperex`: compile-once / eval-many engine, context-first `Eval`, best-effort sandbox, narrowed public façade (AST / VM / lexer unexported). Normative language spec in [LANGUAGE.md](LANGUAGE.md); `examples/` + playground. Covered by unit/race/fuzz, lint, cover ≥90%.
 
-### Changed (Wave 2 — breaking)
-
-- **Context-first Eval.** All Eval surfaces take `context.Context` first; no Background wrappers on the primary API.
-- **Env symmetry on `Program.Eval`** — nil, maps, struct/*struct (same `toEnvMap` rules as Engine).
-- **`Engine.Stats()`** — lock-free snapshot: `Compiles`, `Evals`, `EvalErrors`.
-- **Cancellation / timeouts:** `ctx.Done()` → `ErrOperationCancelled`; sandbox `WithTimeout` and ctx deadline — whichever fires first.
-- **Strict typed helpers:** `WithStrictMode(true)` → `ErrInvalidConversion` instead of silent coerce.
+Notable vs earlier in-tree package: module path `github.com/aasyanov/hyperex`; pipe vs bitwise `|` and range `..` precedence fixed; optimizer aligned with coercion rules; `Analysis.Warnings` for ambiguous `|`. See git history / tag `v1.0.0` for the full API-narrowing and context-first Eval migration notes.

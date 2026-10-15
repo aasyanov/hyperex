@@ -84,10 +84,10 @@ func TestPipeVsBitwise_AnalysisWarnings(t *testing.T) {
 		if err != nil {
 			t.Fatalf("analyze: %v", err)
 		}
-		if !containsWarning(a.Warnings, warnAmbiguousBitwiseOr) {
+		if !containsWarning(a.Warnings, WarnAmbiguousBitwiseOr) {
 			t.Fatalf("want ambiguous warning, got %v", a.Warnings)
 		}
-		if containsWarning(a.Warnings, warnBuiltinNamePipe) {
+		if containsWarning(a.Warnings, WarnBuiltinNamePipe) {
 			t.Fatalf("unexpected builtin-pipe warning: %v", a.Warnings)
 		}
 	})
@@ -97,10 +97,10 @@ func TestPipeVsBitwise_AnalysisWarnings(t *testing.T) {
 		if err != nil {
 			t.Fatalf("analyze: %v", err)
 		}
-		if !containsWarning(a.Warnings, warnBuiltinNamePipe) {
+		if !containsWarning(a.Warnings, WarnBuiltinNamePipe) {
 			t.Fatalf("want builtin-name pipe warning, got %v", a.Warnings)
 		}
-		if containsWarning(a.Warnings, warnAmbiguousBitwiseOr) {
+		if containsWarning(a.Warnings, WarnAmbiguousBitwiseOr) {
 			t.Fatalf("unexpected ambiguous warning: %v", a.Warnings)
 		}
 	})
@@ -110,7 +110,7 @@ func TestPipeVsBitwise_AnalysisWarnings(t *testing.T) {
 		if err != nil {
 			t.Fatalf("analyze: %v", err)
 		}
-		if containsWarning(a.Warnings, warnBuiltinNamePipe) {
+		if containsWarning(a.Warnings, WarnBuiltinNamePipe) {
 			t.Fatalf("arrayLit|ident should not emit builtin-name warning: %v", a.Warnings)
 		}
 	})
@@ -120,7 +120,7 @@ func TestPipeVsBitwise_AnalysisWarnings(t *testing.T) {
 		if err != nil {
 			t.Fatalf("analyze: %v", err)
 		}
-		if !containsWarning(a.Warnings, warnAmbiguousBitwiseOr) {
+		if !containsWarning(a.Warnings, WarnAmbiguousBitwiseOr) {
 			t.Fatalf("want ambiguous warning, got %v", a.Warnings)
 		}
 	})
@@ -252,7 +252,7 @@ func TestRangePrecedence_Parse(t *testing.T) {
 
 func TestRangePrecedence_Eval(t *testing.T) {
 	t.Run("add_binds_looser_than_range", func(t *testing.T) {
-		// 1+2..4 → 1+(2..4); int + array is an error.
+		// 1+2..4 -> 1+(2..4); int + array is an error.
 		_, err := Eval(context.Background(), "1+2..4", nil)
 		if err == nil {
 			t.Fatal("expected error for 1+(2..4)")
@@ -290,7 +290,7 @@ func TestRangePrecedence_Eval(t *testing.T) {
 	})
 
 	t.Run("chained_range", func(t *testing.T) {
-		// (1..2)..3 → non-int start coerces via Int() to 0 → 0..3
+		// (1..2)..3 -> non-int start coerces via Int() to 0 -> 0..3
 		got, err := Eval(context.Background(), "1..2..3", nil)
 		if err != nil {
 			t.Fatalf("eval: %v", err)

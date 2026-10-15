@@ -47,15 +47,8 @@ jobs:
 
       - name: Test
         shell: bash
-        run: |
-          # examples/ are package main demos without tests; including them in
-          # coverprofile dilutes library coverage (e.g. 90% → ~79%).
-          pkgs=$(go list ./... | grep -v '/examples/')
-          go test -race -count=1 -timeout=180s -coverprofile=coverage.txt $pkgs
-
-      - name: Build examples
-        shell: bash
-        run: go build ./examples/...
+        # -coverpkg limits the profile to the library; example mains are demos, not unit-tested.
+        run: go test -race -count=1 -timeout=180s -coverprofile=coverage.txt -coverpkg=github.com/aasyanov/hyperex ./...
 
       - name: Check coverage threshold
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.26'
@@ -82,6 +75,32 @@ jobs:
       - name: Collect and run fuzz targets
         shell: bash
         run: |
+          # Tolerate spurious "context deadline exceeded" on -fuzztime expiry
+          # (golang/go#75804). Real findings always include "Failing input written to".
+          run_fuzz() {
+            local func="$1" dir="$2"
+            local tmp
+            tmp=$(mktemp)
+            set +e
+            go test -fuzz="^${func}$" -fuzztime=30s -timeout=5m "$dir" 2>&1 | tee "$tmp"
+            local ec=${PIPESTATUS[0]}
+            set -e
+            if [ "$ec" -eq 0 ]; then
+              rm -f "$tmp"
+              return 0
+            fi
+            if grep -q 'Failing input written to' "$tmp"; then
+              rm -f "$tmp"
+              return "$ec"
+            fi
+            if grep -q 'context deadline exceeded' "$tmp" && ! grep -qE '_test\.go:[0-9]+:' "$tmp"; then
+              echo "::notice::Ignoring spurious fuzztime deadline for ${func} (golang/go#75804)"
+              rm -f "$tmp"
+              return 0
+            fi
+            rm -f "$tmp"
+            return "$ec"
+          }
           targets=$(grep -r '^func Fuzz' --include='*_test.go' -l . || true)
           if [ -z "$targets" ]; then
             echo "No fuzz targets found"
@@ -92,7 +111,7 @@ jobs:
             funcs=$(grep -oP '^func \KFuzz\w+' "$file")
             for func in $funcs; do
               echo "=== Fuzzing $func in $dir ==="
-              go test -fuzz="^${func}$" -fuzztime=30s "$dir"
+              run_fuzz "$func" "$dir"
             done
           done
 

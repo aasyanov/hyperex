@@ -54,7 +54,7 @@ type FuncSig struct {
 	Returns  Type // Return type
 	Variadic bool
 	// MinArgs/MaxArgs allow expressing functions with optional args (e.g. 2..3 args).
-	// If both are 0, they are derived from Params/Variadic for backward compatibility:
+	// If both are 0, they are derived from Params/Variadic:
 	// - Variadic: MinArgs=len(Params)-1, MaxArgs=-1 (unbounded)
 	// - Non-variadic: MinArgs=len(Params), MaxArgs=len(Params)
 	MinArgs int
@@ -76,22 +76,41 @@ func NewTypeChecker() *TypeChecker {
 	}
 }
 
-// WithEnvType registers environment types for type inference.
-// It accepts either:
-//   - A single struct value: tc.WithEnvType(myStruct) - registers all exported fields
-//   - A name and value: tc.WithEnvType("name", value) - registers a single variable
-func (tc *TypeChecker) WithEnvType(args ...any) *TypeChecker {
-	if len(args) == 1 {
-		// Single argument - treat as struct to register all fields
-		return tc.WithStructEnv(args[0])
+// CheckExpressionType checks if an expression evaluates to the expected type.
+// It performs both syntax and type checking.
+//
+// Parameters:
+//   - expr: The expression to check
+//   - expectedType: The expected return type
+//   - env: Optional environment struct for type inference (can be nil)
+//
+// Returns an error if the expression doesn't match the expected type or has type errors.
+func CheckExpressionType(expr string, expectedType Type, env any) error {
+	parser := newParser(expr)
+	ast, err := parser.parse()
+	if err != nil {
+		return err
 	}
-	if len(args) == 2 {
-		// Two arguments - name and value
-		if name, ok := args[0].(string); ok {
-			tc.env[name] = tc.goTypeToHyperexType(reflect.TypeOf(args[1]))
+
+	tc := NewTypeChecker()
+	if env != nil {
+		tc.WithStructEnv(env)
+	}
+
+	if errs := tc.Check(ast); errs != nil && len(errs.Errors) > 0 {
+		return errs
+	}
+
+	inferredType := tc.Infer(ast)
+	if inferredType != expectedType && inferredType != TypeAny && inferredType != TypeUnknown {
+		return &TypeError{
+			Message:  "expression type mismatch",
+			Expected: expectedType.String(),
+			Got:      inferredType.String(),
 		}
 	}
-	return tc
+
+	return nil
 }
 
 // WithVar registers a variable with a known type.
@@ -483,7 +502,6 @@ func (tc *TypeChecker) checkCall(n *callExpr) {
 		if sig, ok := tc.funcs[ident.Name]; ok {
 			minArgs, maxArgs := sig.MinArgs, sig.MaxArgs
 			if minArgs == 0 && maxArgs == 0 {
-				// Backward compatible defaults.
 				if sig.Variadic {
 					minArgs = len(sig.Params) - 1
 					maxArgs = -1
@@ -719,9 +737,9 @@ func defaultFuncSigs() map[string]FuncSig {
 		// Math
 		// abs returns int for int inputs (except MinInt64 -> float), float otherwise.
 		// Use TypeAny to avoid lying to the checker.
-		nameAbs:   {Params: []Type{TypeAny}, Returns: TypeAny},
-		nameMin:   {Params: []Type{TypeAny}, Returns: TypeAny, Variadic: true},
-		nameMax:   {Params: []Type{TypeAny}, Returns: TypeAny, Variadic: true},
+		nameAbs: {Params: []Type{TypeAny}, Returns: TypeAny},
+		nameMin: {Params: []Type{TypeAny}, Returns: TypeAny, Variadic: true},
+		nameMax: {Params: []Type{TypeAny}, Returns: TypeAny, Variadic: true},
 		// Note: runtime math builtins accept any numeric-ish value (they call Value.Float()).
 		// We keep parameter types broad to avoid false positives under WithTypeCheck.
 		// ceil/floor/round usually return int, but can return float for out-of-range values.
@@ -796,7 +814,6 @@ func defaultFuncSigs() map[string]FuncSig {
 		nameHasKey:   {Params: []Type{TypeMap, TypeString}, Returns: TypeBool},
 		nameEmpty:    {Params: []Type{TypeAny}, Returns: TypeBool},
 		nameNotEmpty: {Params: []Type{TypeAny}, Returns: TypeBool},
-		nameSize:     {Params: []Type{TypeAny}, Returns: TypeInt}, // alias for len
 		nameDefault:  {Params: []Type{TypeAny, TypeAny}, Returns: TypeAny},
 		nameCoalesce: {Params: []Type{TypeAny}, Returns: TypeAny, Variadic: true},
 		nameRepeat:   {Params: []Type{TypeAny, TypeInt}, Returns: TypeArray},
@@ -810,5 +827,34 @@ func defaultFuncSigs() map[string]FuncSig {
 		nameSortBy:   {Params: []Type{TypeArray, TypeFunc, TypeBool}, Returns: TypeArray, MinArgs: 2, MaxArgs: 3},
 		nameToJSON:   {Params: []Type{TypeAny}, Returns: TypeString},
 		nameFromJSON: {Params: []Type{TypeString}, Returns: TypeAny},
+
+		// Time / duration (v1.1) — TypeAny keeps checker honest until dedicated TypeTime exists.
+		nameTimeUTC:         {Params: []Type{TypeAny, TypeAny, TypeAny, TypeAny, TypeAny, TypeAny}, Returns: TypeAny},
+		nameTimeUnix:        {Params: []Type{TypeAny}, Returns: TypeAny},
+		nameTimeUnixNano:    {Params: []Type{TypeAny}, Returns: TypeAny},
+		nameUnix:            {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameUnixNano:        {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameTimeYear:        {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameTimeMonth:       {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameTimeDay:         {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameTimeHour:        {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameTimeMinute:      {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameTimeSecond:      {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameTimeWeekday:     {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameTimeAdd:         {Params: []Type{TypeAny, TypeAny}, Returns: TypeAny},
+		nameDurationSeconds: {Params: []Type{TypeAny}, Returns: TypeAny},
+		nameDurationMs:      {Params: []Type{TypeAny}, Returns: TypeAny},
+		nameDurationNs:      {Params: []Type{TypeAny}, Returns: TypeAny},
+		nameDurSeconds:      {Params: []Type{TypeAny}, Returns: TypeFloat},
+		nameDurMs:           {Params: []Type{TypeAny}, Returns: TypeInt},
+		nameDurNs:           {Params: []Type{TypeAny}, Returns: TypeInt},
+
+		// Quality (map-shaped {v,q})
+		nameV:           {Params: []Type{TypeAny}, Returns: TypeAny},
+		nameQ:           {Params: []Type{TypeAny}, Returns: TypeAny},
+		nameIsGood:      {Params: []Type{TypeAny}, Returns: TypeBool},
+		nameIsBad:       {Params: []Type{TypeAny}, Returns: TypeBool},
+		nameIsUncertain: {Params: []Type{TypeAny}, Returns: TypeBool},
+		nameWithQ:       {Params: []Type{TypeAny, TypeAny}, Returns: TypeMap},
 	}
 }

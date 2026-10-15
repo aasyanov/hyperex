@@ -30,7 +30,7 @@ type (
 		Value bool
 	}
 
-	// nilLit represents a nil/null literal.
+	// nilLit represents a nil literal.
 	nilLit struct{}
 
 	// ident represents an identifier (variable reference).

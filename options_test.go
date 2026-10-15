@@ -2,12 +2,11 @@ package hyperex
 
 import (
 	"context"
-	"reflect"
 	"testing"
 	"time"
 )
 
-// options_test.go — default vs override for each WithXxx (functional Option pattern).
+// options_test.go - default vs override for each WithXxx (functional Option pattern).
 // Uses white-box inspection of *engineConfig after New(...).
 
 func TestOptions_Defaults(t *testing.T) {
@@ -27,6 +26,12 @@ func TestOptions_Defaults(t *testing.T) {
 	}
 	if cfg.strictMode {
 		t.Fatal("default strictMode=false")
+	}
+	if cfg.numericMode != NumericDefault {
+		t.Fatalf("default numericMode=%v want NumericDefault", cfg.numericMode)
+	}
+	if cfg.nonFiniteMode != NonFiniteAllow {
+		t.Fatalf("default nonFiniteMode=%v want NonFiniteAllow", cfg.nonFiniteMode)
 	}
 	if cfg.typeCheck {
 		t.Fatal("default typeCheck=false")
@@ -89,6 +94,20 @@ func TestOptions_WithStrictMode_Override(t *testing.T) {
 	}
 }
 
+func TestOptions_WithNumericMode_Override(t *testing.T) {
+	eng := New(WithNumericMode(NumericFloat64))
+	if eng.config.numericMode != NumericFloat64 {
+		t.Fatal("WithNumericMode(NumericFloat64): not set")
+	}
+}
+
+func TestOptions_WithNonFinite_Override(t *testing.T) {
+	eng := New(WithNonFinite(NonFiniteError))
+	if eng.config.nonFiniteMode != NonFiniteError {
+		t.Fatal("WithNonFinite(NonFiniteError): not set")
+	}
+}
+
 func TestOptions_WithFunction_AndFunctions(t *testing.T) {
 	double := func(x int) int { return x * 2 }
 	eng := New(WithFunction("double", double))
@@ -118,19 +137,6 @@ func TestOptions_WithOperator_Override(t *testing.T) {
 	)
 	if eng.config.operators["+"] != "concat" {
 		t.Fatalf("operators[+]=%q want concat", eng.config.operators["+"])
-	}
-}
-
-func TestOptions_WithEnv_EnablesTypeCheck(t *testing.T) {
-	type Env struct {
-		X int `expr:"x"`
-	}
-	eng := New(WithEnv(Env{}))
-	if !eng.config.typeCheck {
-		t.Fatal("WithEnv should enable typeCheck")
-	}
-	if eng.config.envType == nil || eng.config.envType.Kind() != reflect.Struct {
-		t.Fatalf("envType=%v", eng.config.envType)
 	}
 }
 

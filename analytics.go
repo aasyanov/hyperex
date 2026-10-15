@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// profileMaxOpsTracking is a high MaxOps ceiling used only so Profile/ProfileExpr
+// can count ops without tripping the sandbox on trusted studio profiling.
+const profileMaxOpsTracking int64 = 1_000_000_000
+
 // Complexity represents the estimated computational complexity of an expression.
 type Complexity int
 
@@ -30,45 +34,6 @@ func (c Complexity) String() string {
 	default:
 		return complexityUnknownStr
 	}
-}
-
-// CheckExpressionType checks if an expression evaluates to the expected type.
-// It performs both syntax and type checking.
-//
-// Parameters:
-//   - expr: The expression to check
-//   - expectedType: The expected return type
-//   - env: Optional environment struct for type inference (can be nil)
-//
-// Returns an error if the expression doesn't match the expected type or has type errors.
-func CheckExpressionType(expr string, expectedType Type, env any) error {
-	parser := newParser(expr)
-	ast, err := parser.parse()
-	if err != nil {
-		return err
-	}
-
-	tc := NewTypeChecker()
-	if env != nil {
-		tc.WithStructEnv(env)
-	}
-
-	// Check for type errors
-	if errs := tc.Check(ast); errs != nil && len(errs.Errors) > 0 {
-		return errs
-	}
-
-	// Infer the type and compare with expected
-	inferredType := tc.Infer(ast)
-	if inferredType != expectedType && inferredType != TypeAny && inferredType != TypeUnknown {
-		return &TypeError{
-			Message:  "expression type mismatch",
-			Expected: expectedType.String(),
-			Got:      inferredType.String(),
-		}
-	}
-
-	return nil
 }
 
 // Analysis holds static-analysis results for an expression AST.
@@ -104,13 +69,19 @@ type Analysis struct {
 	EstimatedCost int
 	// Warnings lists stable English diagnostic messages for ambiguous or
 	// heuristic-driven constructs (for example pipe vs bitwise |).
+	// Compare with [WarnAmbiguousBitwiseOr] / [WarnBuiltinNamePipe] (same strings).
 	Warnings []string
+
+	// memberRootsOnly, when set by ExtractVariablesOpts, skips property idents
+	// under non-computed memberExpr (Alarm.Fire → Alarm only).
+	memberRootsOnly bool
 }
 
 // Stable Analysis.Warnings messages for | pipe vs bitwise OR heuristics.
+// Exported so Studio / tests can match without hardcoding English text.
 const (
-	warnAmbiguousBitwiseOr = "ambiguous | between two identifiers treated as bitwise OR; use an explicit call (x | f()) for pipe"
-	warnBuiltinNamePipe    = "pipe chosen because right-hand identifier matches a default builtin name"
+	WarnAmbiguousBitwiseOr = "ambiguous | between two identifiers treated as bitwise OR; use an explicit call (x | f()) for pipe"
+	WarnBuiltinNamePipe    = "pipe chosen because right-hand identifier matches a default builtin name"
 )
 
 // Profile holds runtime profiling results from compiling and/or executing an
@@ -190,7 +161,7 @@ func (a *Analysis) analyze(node Node, depth int) {
 		if n.Op == "|" {
 			if _, lok := n.Left.(*ident); lok {
 				if ri, rok := n.Right.(*ident); rok && !isDefaultBuiltinName(ri.Name) {
-					a.Warnings = append(a.Warnings, warnAmbiguousBitwiseOr)
+					a.Warnings = append(a.Warnings, WarnAmbiguousBitwiseOr)
 				}
 			}
 		}
@@ -241,6 +212,12 @@ func (a *Analysis) analyze(node Node, depth int) {
 			a.UsesOptionalChaining = true
 		}
 		a.analyze(n.Object, depth+1)
+		// ExtractMemberRoots: for Alarm.Fire list Alarm only (skip property ident).
+		if a.memberRootsOnly && !n.Computed {
+			if _, ok := n.Property.(*ident); ok {
+				break
+			}
+		}
 		a.analyze(n.Property, depth+1)
 
 	case *indexExpr:
@@ -287,7 +264,7 @@ func (a *Analysis) analyze(node Node, depth int) {
 		// Info: ident | builtinIdent was chosen as pipe via the builtin-name rule.
 		if _, lok := n.Left.(*ident); lok {
 			if ri, rok := n.Right.(*ident); rok && isDefaultBuiltinName(ri.Name) {
-				a.Warnings = append(a.Warnings, warnBuiltinNamePipe)
+				a.Warnings = append(a.Warnings, WarnBuiltinNamePipe)
 			}
 		}
 		// Pipe usually involves iteration
@@ -379,7 +356,7 @@ func ProfileExpr(ctx context.Context, expr string, env any) (*Profile, any, erro
 
 	// Time compilation - use engine with high ops limit to track execution
 	compileStart := time.Now()
-	eng := New(WithSandbox(SandboxConfig{MaxOps: 1_000_000_000})) // High limit just for tracking
+	eng := New(WithSandbox(SandboxConfig{MaxOps: profileMaxOpsTracking}))
 	prog, err := eng.Compile(expr)
 	p.CompileTime = time.Since(compileStart)
 
@@ -393,7 +370,7 @@ func ProfileExpr(ctx context.Context, expr string, env any) (*Profile, any, erro
 	execStart := time.Now()
 
 	// Build sandbox limits for tracking
-	limits := buildSandboxLimits(&SandboxConfig{MaxOps: 1_000_000_000})
+	limits := buildSandboxLimits(&SandboxConfig{MaxOps: profileMaxOpsTracking})
 
 	// Read builtins with read lock
 	prog.engine.mu.RLock()
@@ -401,10 +378,12 @@ func ProfileExpr(ctx context.Context, expr string, env any) (*Profile, any, erro
 	prog.engine.mu.RUnlock()
 
 	vm := newVMWithLimits(prog.bytecode, builtins, limits)
-	// Inherit strict mode and maxCallDepth from engine config
+	// Inherit strict mode, numeric/non-finite policy, and maxCallDepth from engine config
 	if prog.engine.config.strictMode {
 		vm.strictMode = true
 	}
+	vm.numericMode = prog.engine.config.numericMode
+	vm.nonFiniteMode = prog.engine.config.nonFiniteMode
 	if prog.engine.config.maxCallDepth > 0 {
 		vm.maxDepth = prog.engine.config.maxCallDepth
 	}
@@ -436,7 +415,7 @@ func (p *Program) Profile(ctx context.Context, env any) (*Profile, any, error) {
 	execStart := time.Now()
 
 	// Build sandbox limits for ops tracking
-	limits := buildSandboxLimits(&SandboxConfig{MaxOps: 1_000_000_000})
+	limits := buildSandboxLimits(&SandboxConfig{MaxOps: profileMaxOpsTracking})
 
 	// Read builtins with read lock
 	p.engine.mu.RLock()
@@ -444,10 +423,12 @@ func (p *Program) Profile(ctx context.Context, env any) (*Profile, any, error) {
 	p.engine.mu.RUnlock()
 
 	vm := newVMWithLimits(p.bytecode, builtins, limits)
-	// Inherit strict mode and maxCallDepth from engine config
+	// Inherit strict mode, numeric/non-finite policy, and maxCallDepth from engine config
 	if p.engine.config.strictMode {
 		vm.strictMode = true
 	}
+	vm.numericMode = p.engine.config.numericMode
+	vm.nonFiniteMode = p.engine.config.nonFiniteMode
 	if p.engine.config.maxCallDepth > 0 {
 		vm.maxDepth = p.engine.config.maxCallDepth
 	}

@@ -75,6 +75,8 @@ func FuzzEval_NoPanic_NoHang(f *testing.F) {
 	f.Add("[1][99]")
 	f.Add("range(1,100) | sum")
 	f.Add("x?.y ?? 1")
+	f.Add("timeHour(timeUnix(0))")
+	f.Add("durationSeconds(1)+durationMs(500)")
 	f.Add("")
 
 	f.Fuzz(func(t *testing.T, expr string) {
@@ -95,7 +97,7 @@ func FuzzEval_NoPanic_NoHang(f *testing.F) {
 	})
 }
 
-// FuzzCompileEval_Pipeline asserts parse→compile→eval never panics on arbitrary
+// FuzzCompileEval_Pipeline asserts parse->compile->eval never panics on arbitrary
 // strings under a MaxOps sandbox (errors are fine; panics are not).
 func FuzzCompileEval_Pipeline(f *testing.F) {
 	f.Add("1+2")
@@ -113,7 +115,7 @@ func FuzzCompileEval_Pipeline(f *testing.F) {
 		if len(expr) > 512 {
 			t.Skip()
 		}
-		fuzzNoPanic(t, "parse→compile→eval", func() {
+		fuzzNoPanic(t, "parse->compile->eval", func() {
 			engine := New(
 				WithSandbox(SandboxConfig{
 					MaxOps:        5_000,
@@ -240,11 +242,11 @@ func FuzzOptimize_Equivalent(f *testing.F) {
 			r1, e1 := pOpt.Eval(ctx, env)
 			r2, e2 := pNo.Eval(ctx, env)
 			if e1 != nil || e2 != nil {
-				// Algebraic folds (e.g. A*0 → 0) can mask UndefinedError; errors need not match.
+				// Algebraic folds (e.g. A*0 -> 0) can mask UndefinedError; errors need not match.
 				return
 			}
 			v1, v2 := NewValue(r1), NewValue(r2)
-			// Closures/funcs are rebuilt per Compile — pointer identity will differ.
+			// Closures/funcs are rebuilt per Compile - pointer identity will differ.
 			if v1.IsFunc() || v2.IsFunc() {
 				if v1.IsFunc() && v2.IsFunc() {
 					return

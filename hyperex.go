@@ -3,9 +3,9 @@ package hyperex
 
 import (
 	"context"
-	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Engine is the main entry point for HyperEx expression evaluation.
@@ -20,6 +20,11 @@ type Engine struct {
 	optimizer   *optimizer
 	typeChecker *TypeChecker
 	mu          sync.RWMutex
+
+	// sandboxBase caches allow/deny maps + numeric limits from New (immutable).
+	// Each Eval shallow-copies it and refreshes deadline via sandboxTimeout.
+	sandboxBase    *sandboxLimits
+	sandboxTimeout time.Duration
 
 	compiles   atomic.Int64
 	evals      atomic.Int64
@@ -55,18 +60,14 @@ func New(opts ...Option) *Engine {
 	for name, fn := range config.functions {
 		// Wrap custom functions as builtinFunc so sandbox allow/deny by name works
 		// (and so vm can distinguish "named" functions from env-provided functions).
-		builtins[name] = Func(&builtinFunc{
-			name: name,
-			fn: func(_ *execVM, args []Value) (Value, error) {
-				return callNativeFromBuiltin(fn, args)
-			},
-		})
+		builtins[name] = wrapHostFunction(name, fn, config.safeFuncs)
 	}
 
 	// Setup optimizer from engine options (WithConstantFolding / WithStrengthReduction).
 	optimizer := newOptimizer().
 		withConstantFolding(config.constantFolding).
-		withStrengthReduction(config.strengthReduce)
+		withStrengthReduction(config.strengthReduce).
+		withNumericMode(config.numericMode)
 	// Tell optimizer about overloaded operators so it doesn't optimize them
 	if len(config.operators) > 0 {
 		optimizer.withSkipOperators(config.operators)
@@ -78,12 +79,17 @@ func New(opts ...Option) *Engine {
 		typeChecker = NewTypeChecker().WithStructEnv(config.envVal)
 	}
 
-	return &Engine{
+	eng := &Engine{
 		config:      config,
 		builtins:    builtins,
 		optimizer:   optimizer,
 		typeChecker: typeChecker,
 	}
+	if config.sandbox != nil {
+		eng.sandboxBase = buildSandboxLimitsStatic(config.sandbox)
+		eng.sandboxTimeout = config.sandbox.Timeout
+	}
+	return eng
 }
 
 // Compile parses and compiles an expression string into a reusable Program.
@@ -108,6 +114,10 @@ func (e *Engine) Compile(expr string, opts ...CompileOption) (*Program, error) {
 			continue
 		}
 		opt(compileConfig)
+	}
+
+	if e.config.maxSourceBytes > 0 && len(expr) > e.config.maxSourceBytes {
+		return nil, ErrSourceTooLarge
 	}
 
 	// Parse expression
@@ -180,6 +190,7 @@ func (e *Engine) MustCompile(expr string, opts ...CompileOption) *Program {
 // Eval compiles and evaluates an expression in a single call.
 // For repeated evaluation, use Compile + Program.Eval instead.
 //
+// A nil ctx is treated as context.Background() (soft-open); prefer a non-nil ctx.
 // ctx cancellation returns an error matching [ErrOperationCancelled].
 // Sandbox [WithTimeout] and ctx deadlines both apply — whichever fires first wins.
 //
@@ -249,7 +260,7 @@ func (e *Engine) EvalString(ctx context.Context, expr string, env ...any) (strin
 	return convertString(NewValue(result), e.config.strictMode)
 }
 
-// AddFunction adds a function to the engine at runtime.
+// AddFunction adds a trusted function to the engine at runtime ([WithFunction] semantics).
 // This is safe for concurrent use (uses copy-on-write).
 func (e *Engine) AddFunction(name string, fn any) {
 	e.mu.Lock()
@@ -259,220 +270,36 @@ func (e *Engine) AddFunction(name string, fn any) {
 	for k, v := range e.builtins {
 		newBuiltins[k] = v
 	}
-	// Wrap as builtinFunc to preserve sandbox allow/deny behavior by name.
-	newBuiltins[name] = Func(&builtinFunc{
-		name: name,
-		fn: func(_ *execVM, args []Value) (Value, error) {
-			return callNativeFromBuiltin(fn, args)
-		},
-	})
+	// Trusted: no SafeFunction ops tax.
+	newBuiltins[name] = wrapHostFunction(name, fn, nil)
 	e.builtins = newBuiltins
 }
 
-// toEnvMap converts various environment types to map[string]any.
-func toEnvMap(env any) map[string]any {
-	if env == nil {
-		return nil
+// wrapHostFunction wraps a Go callback as a named builtinFunc.
+// If name is present in safeFuncs, each call increments opsCount by the SafeFunction tax.
+func wrapHostFunction(name string, fn any, safeFuncs map[string]SafeFuncMeta) Value {
+	meta, safe := safeFuncs[name]
+	if !safe {
+		return Func(&builtinFunc{
+			name: name,
+			fn: func(_ *execVM, args []Value) (Value, error) {
+				return callNativeFromBuiltin(fn, args)
+			},
+		})
 	}
-
-	if m, ok := env.(map[string]any); ok {
-		return m
-	}
-
-	rv := reflect.ValueOf(env)
-	if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
-		m := make(map[string]any, rv.Len())
-		iter := rv.MapRange()
-		for iter.Next() {
-			m[iter.Key().String()] = iter.Value().Interface()
-		}
-		return m
-	}
-
-	if rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			return nil
-		}
-		rv = rv.Elem()
-	}
-	if rv.Kind() == reflect.Struct {
-		return structToMap(rv)
-	}
-
-	return nil
-}
-
-func structToMap(rv reflect.Value) map[string]any {
-	rt := rv.Type()
-	m := make(map[string]any, rv.NumField())
-
-	for i := 0; i < rv.NumField(); i++ {
-		field := rt.Field(i)
-		if !field.IsExported() {
-			continue
-		}
-
-		name := field.Tag.Get("expr")
-		if name == "" {
-			name = field.Name
-		}
-		if name == "-" {
-			continue
-		}
-
-		m[name] = rv.Field(i).Interface()
-	}
-
-	return m
-}
-
-// Program represents a compiled expression ready for evaluation.
-type Program struct {
-	source       string
-	bytecode     *bytecode
-	engine       *Engine
-	expectBool   bool
-	expectInt    bool
-	expectFloat  bool
-	expectString bool
-}
-
-// Eval executes the compiled program with the given environment.
-// env may be nil, map[string]any, another string-keyed map, or a struct/*struct
-// (exported fields; `expr` tag or field name; `-` skips) — same rules as [Engine.Eval].
-//
-// ctx cancellation returns an error matching [ErrOperationCancelled].
-// Sandbox [WithTimeout] and ctx deadlines both apply — whichever fires first wins.
-//
-// Example:
-//
-//	result, err := program.Eval(ctx, map[string]any{"x": 10, "y": 20})
-func (p *Program) Eval(ctx context.Context, env any) (any, error) {
-	p.engine.evals.Add(1)
-
-	envMap := toEnvMap(env)
-
-	// Build sandbox limits if configured
-	var limits *sandboxLimits
-	if p.engine.config.sandbox != nil {
-		limits = buildSandboxLimits(p.engine.config.sandbox)
-	}
-
-	// Read builtins with read lock for thread safety
-	p.engine.mu.RLock()
-	builtins := p.engine.builtins
-	p.engine.mu.RUnlock()
-
-	var vm *execVM
-	if limits != nil {
-		vm = newVMWithLimits(p.bytecode, builtins, limits)
-	} else {
-		vm = newVM(p.bytecode, builtins)
-	}
-
-	// Apply maxCallDepth: sandbox takes priority, then engine config
-	if limits != nil && limits.maxCallDepth > 0 {
-		// Already set by newVMWithLimits, don't override
-	} else if p.engine.config.maxCallDepth > 0 {
-		vm.maxDepth = p.engine.config.maxCallDepth
-	}
-
-	if p.engine.config.strictMode {
-		vm.strictMode = true
-	}
-
-	defer releaseVM(vm)
-
-	result, err := vm.run(ctx, envMap)
-	if err != nil {
-		p.engine.evalErrors.Add(1)
-		return nil, annotateEvalError(err, p.source)
-	}
-
-	strict := p.engine.config.strictMode
-
-	if p.expectBool {
-		b, cerr := convertBool(result, strict)
-		if cerr != nil {
-			p.engine.evalErrors.Add(1)
-			return nil, annotateEvalError(cerr, p.source)
-		}
-		return b, nil
-	}
-	if p.expectInt {
-		n, cerr := convertInt(result, strict)
-		if cerr != nil {
-			p.engine.evalErrors.Add(1)
-			return nil, annotateEvalError(cerr, p.source)
-		}
-		return n, nil
-	}
-	if p.expectFloat {
-		f, cerr := convertFloat(result, strict)
-		if cerr != nil {
-			p.engine.evalErrors.Add(1)
-			return nil, annotateEvalError(cerr, p.source)
-		}
-		return f, nil
-	}
-	if p.expectString {
-		s, cerr := convertString(result, strict)
-		if cerr != nil {
-			p.engine.evalErrors.Add(1)
-			return nil, annotateEvalError(cerr, p.source)
-		}
-		return s, nil
-	}
-
-	return result.Interface(), nil
-}
-
-// EvalBool evaluates and returns a boolean result.
-// Under [WithStrictMode], invalid conversions return [ErrInvalidConversion].
-func (p *Program) EvalBool(ctx context.Context, env any) (bool, error) {
-	result, err := p.Eval(ctx, env)
-	if err != nil {
-		return false, err
-	}
-	if b, ok := result.(bool); ok {
-		return b, nil
-	}
-	return convertBool(NewValue(result), p.engine.config.strictMode)
-}
-
-// EvalInt evaluates and returns an int64 result.
-// Under [WithStrictMode], invalid conversions return [ErrInvalidConversion].
-func (p *Program) EvalInt(ctx context.Context, env any) (int64, error) {
-	result, err := p.Eval(ctx, env)
-	if err != nil {
-		return 0, err
-	}
-	return convertInt(NewValue(result), p.engine.config.strictMode)
-}
-
-// EvalFloat evaluates and returns a float64 result.
-// Under [WithStrictMode], invalid conversions return [ErrInvalidConversion].
-func (p *Program) EvalFloat(ctx context.Context, env any) (float64, error) {
-	result, err := p.Eval(ctx, env)
-	if err != nil {
-		return 0, err
-	}
-	return convertFloat(NewValue(result), p.engine.config.strictMode)
-}
-
-// EvalString evaluates and returns a string result.
-// Under [WithStrictMode], invalid conversions return [ErrInvalidConversion].
-func (p *Program) EvalString(ctx context.Context, env any) (string, error) {
-	result, err := p.Eval(ctx, env)
-	if err != nil {
-		return "", err
-	}
-	return convertString(NewValue(result), p.engine.config.strictMode)
-}
-
-// Source returns the original expression source.
-func (p *Program) Source() string {
-	return p.source
+	tax := safeFuncOpsTax(meta)
+	return Func(&builtinFunc{
+		name: name,
+		fn: func(vm *execVM, args []Value) (Value, error) {
+			if vm != nil && tax > 0 {
+				vm.opsCount += tax
+				if err := vm.checkLimits(); err != nil {
+					return Nil, err
+				}
+			}
+			return callNativeFromBuiltin(fn, args)
+		},
+	})
 }
 
 // --- Package-level convenience functions ---
@@ -505,26 +332,6 @@ func MustCompile(expr string, opts ...CompileOption) *Program {
 	return defaultEngine.MustCompile(expr, opts...)
 }
 
-// annotateEvalError adds source context and normalizes runtime sentinels.
-func annotateEvalError(err error, source string) error {
-	switch e := err.(type) {
-	case *RuntimeError:
-		return e.WithSource(source)
-	case *SandboxError:
-		return e
-	case *UndefinedError:
-		return &RuntimeError{
-			Message: e.Error(),
-			Source:  source,
-			cause:   e,
-		}
-	}
-	if isKnownRuntimeErr(err) {
-		return wrapRuntime(err).WithSource(source)
-	}
-	return err
-}
-
 // EvalBool compiles and evaluates an expression, returning a boolean result.
 func EvalBool(ctx context.Context, expr string, env ...any) (bool, error) {
 	return defaultEngine.EvalBool(ctx, expr, env...)
@@ -543,32 +350,4 @@ func EvalFloat(ctx context.Context, expr string, env ...any) (float64, error) {
 // EvalString compiles and evaluates an expression, returning a string result.
 func EvalString(ctx context.Context, expr string, env ...any) (string, error) {
 	return defaultEngine.EvalString(ctx, expr, env...)
-}
-
-func convertBool(v Value, strict bool) (bool, error) {
-	if !strict {
-		return v.Bool(), nil
-	}
-	return v.TryBool()
-}
-
-func convertInt(v Value, strict bool) (int64, error) {
-	if !strict {
-		return v.Int(), nil
-	}
-	return v.TryInt()
-}
-
-func convertFloat(v Value, strict bool) (float64, error) {
-	if !strict {
-		return v.Float(), nil
-	}
-	return v.TryFloat()
-}
-
-func convertString(v Value, strict bool) (string, error) {
-	if !strict {
-		return v.String(), nil
-	}
-	return v.TryString()
 }

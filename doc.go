@@ -1,12 +1,15 @@
 // Package hyperex provides a high-performance expression evaluation engine for Go.
 //
+// Import path: github.com/aasyanov/hyperex
+//
 // The public surface is Engine / Program / Value / Options, error types, and
 // transform/analytics helpers (Analyze, Simplify, ExtractVariables, Walk,
-// Transform, Node, TypeChecker, …). Lexer, parser, bytecode, compiler, optimizer,
-// and the VM (execVM) are package-private; concrete AST node types are unexported.
+// Transform, Node, TypeChecker, …), plus Studio DX façades Tokenize / Parse.
+// Lexer, parser, bytecode, compiler, optimizer, and the VM (execVM) are
+// package-private; concrete AST node types are unexported.
 //
-// Expression language syntax and semantics are defined in LANGUAGE.md (normative).
-// Engine/sandbox/numeric contracts are in AUDIT.md.
+// Expression language syntax and semantics are defined in LANGUAGE.md (normative),
+// including numeric edges and sandbox / Secure / SafeFunction host options (§3.5, §11).
 //
 // HyperEx compiles expressions to bytecode and runs them on an optimized vm.
 // Design goals include aggressive compile-time optimization, specialized opcodes,
@@ -52,7 +55,7 @@
 //	    Y float64 `expr:"y"`
 //	}
 //
-//	engine := hyperex.New(hyperex.WithEnv(Env{})) // enables type checking
+//	engine := hyperex.New(hyperex.WithTypeCheck(Env{})) // enables type checking
 //	result, _ := engine.Eval(ctx, `x + y`, Env{X: 10, Y: 5.5})
 //	result, _ = program.Eval(ctx, Env{X: 10, Y: 5.5}) // same rules on Program.Eval
 //
@@ -77,6 +80,8 @@
 //	result, _ := engine.Eval(ctx, `double(21)`)     // 42
 //	result, _ := engine.Eval(ctx, `greet("World")`) // "Hello, World"
 //
+// [WithFunction] is a trusted escape hatch (no forced MaxOps tax). Prefer
+// [WithSafeFunction] for domain helpers that should count against MaxOps.
 // For static type checking of custom function signatures, use
 // [TypeChecker.WithFunc] (not an Engine option).
 //
@@ -126,9 +131,10 @@
 // Sandbox (including Secure mode) is best-effort protection against untrusted expressions:
 // it enforces resource limits and restricts access to external Go objects in Secure mode,
 // but it is not a process-level security boundary. User-provided Go functions registered
-// via [WithFunction] can perform arbitrary work and escape the sandbox.
+// via [WithFunction] can perform arbitrary work and escape the sandbox;
+// [WithSafeFunction] still uses reflection but charges an ops tax per call.
 //
-// See AUDIT.md for threat-model contracts; agent craft rules live under .cursor/rules/ (local checkout).
+// Sandbox (including Secure) is best-effort, not process isolation — see LANGUAGE.md §11.
 //
 // # Numeric Edge Cases
 //

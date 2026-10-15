@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -49,6 +50,10 @@ func (v Value) stringify(depth int, seen map[uintptr]bool) string {
 		return litFalse
 	case kindNil:
 		return litNil
+	case kindTime:
+		return timeFromBits(v.bits).Format(time.RFC3339Nano)
+	case kindDuration:
+		return time.Duration(int64(v.bits)).String()
 	case kindArray:
 		arr := v.ptr.([]any)
 		rv := reflect.ValueOf(arr)
@@ -133,6 +138,9 @@ func (v Value) stringify(depth int, seen map[uintptr]bool) string {
 // It uses a tagged union approach for efficient storage of common types.
 // Size: 32 bytes (kind:8 + bits:8 + ptr:16) instead of 40 bytes.
 //
+// Value is not safe for concurrent mutation; treat as immutable after construction
+// for concurrent reads of the same Value.
+//
 // IMPORTANT: Do not construct Value manually; use NewValue / Int / Float / String / Bool / Array / Map / Func.
 // The (kind, bits, ptr) fields form an internal invariant. Violating it may cause panics or incorrect behavior.
 type Value struct {
@@ -156,6 +164,8 @@ const (
 	kindMap
 	kindFunc
 	kindAny // wrapped Go value
+	kindTime
+	kindDuration
 )
 
 // Nil is the nil value constant.
@@ -222,6 +232,10 @@ func NewValue(v any) Value {
 		return Func(&cp)
 	case *closure:
 		return Func(x)
+	case time.Time:
+		return Time(x)
+	case time.Duration:
+		return Duration(x)
 	default:
 		// Use reflection for complex types
 		rv := reflect.ValueOf(v)
@@ -301,6 +315,25 @@ func Func(fn any) Value {
 	return Value{kind: kindFunc, ptr: fn}
 }
 
+// Time constructs a kindTime Value from t.
+// The instant is normalized to UTC Absolute (monotonic clock stripped via UnixNano).
+func Time(t time.Time) Value {
+	return Value{kind: kindTime, bits: uint64(t.UTC().UnixNano())}
+}
+
+// Duration constructs a kindDuration Value from d (nanoseconds in bits).
+func Duration(d time.Duration) Value {
+	return Value{kind: kindDuration, bits: uint64(d)}
+}
+
+func timeFromBits(bits uint64) time.Time {
+	return time.Unix(0, int64(bits)).UTC()
+}
+
+func durationFromBits(bits uint64) time.Duration {
+	return time.Duration(int64(bits))
+}
+
 // IsNil reports whether v is nil.
 func (v Value) IsNil() bool { return v.kind == kindNil }
 
@@ -328,6 +361,12 @@ func (v Value) IsMap() bool { return v.kind == kindMap }
 // IsFunc reports whether v is a function.
 func (v Value) IsFunc() bool { return v.kind == kindFunc }
 
+// IsTime reports whether v is a UTC instant (kindTime).
+func (v Value) IsTime() bool { return v.kind == kindTime }
+
+// IsDuration reports whether v is a duration (kindDuration).
+func (v Value) IsDuration() bool { return v.kind == kindDuration }
+
 // Type returns a string describing the value's type.
 func (v Value) Type() string {
 	switch v.kind {
@@ -347,6 +386,10 @@ func (v Value) Type() string {
 		return nameMap
 	case kindFunc:
 		return kindFunction
+	case kindTime:
+		return nameTime
+	case kindDuration:
+		return nameDuration
 	case kindAny:
 		if v.ptr == nil {
 			return litNil
@@ -374,6 +417,8 @@ func (v Value) Bool() bool {
 		return len(v.ptr.(map[string]any)) > 0
 	case kindNil:
 		return false
+	case kindTime, kindDuration:
+		return v.bits != 0
 	default:
 		return v.ptr != nil
 	}
@@ -479,6 +524,8 @@ func (v Value) TryString() (string, error) {
 	return "", ErrInvalidConversion
 }
 
+// String returns a human-readable representation of v.
+// Arrays and maps are formatted with depth/element/length limits; cycles are marked.
 func (v Value) String() string {
 	return v.stringify(0, make(map[uintptr]bool, 8))
 }
@@ -516,6 +563,10 @@ func (v Value) Interface() any {
 		return v.ptr.([]any)
 	case kindMap:
 		return v.ptr.(map[string]any)
+	case kindTime:
+		return timeFromBits(v.bits)
+	case kindDuration:
+		return durationFromBits(v.bits)
 	default:
 		return v.ptr
 	}
@@ -616,7 +667,7 @@ func (v Value) Equal(other Value) bool {
 	switch v.kind {
 	case kindNil:
 		return true
-	case kindBool, kindInt:
+	case kindBool, kindInt, kindTime, kindDuration:
 		return v.bits == other.bits
 	case kindFloat:
 		return v.bits == other.bits
@@ -715,6 +766,28 @@ func (v Value) Compare(other Value) int {
 			return -1
 		}
 		if f1 > f2 {
+			return 1
+		}
+		return 0
+	}
+
+	// Instant / duration ordering (same kind only)
+	if v.kind == kindTime && other.kind == kindTime {
+		a, b := int64(v.bits), int64(other.bits)
+		if a < b {
+			return -1
+		}
+		if a > b {
+			return 1
+		}
+		return 0
+	}
+	if v.kind == kindDuration && other.kind == kindDuration {
+		a, b := int64(v.bits), int64(other.bits)
+		if a < b {
+			return -1
+		}
+		if a > b {
 			return 1
 		}
 		return 0

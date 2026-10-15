@@ -1,4 +1,4 @@
-// String-level transform helpers: Simplify, Expand, Inline.
+// String transforms plus opaque Node tooling (Parse / Walk / ASTToString).
 package main
 
 import (
@@ -8,10 +8,6 @@ import (
 )
 
 func main() {
-	// Note: ASTToString / Walk / Transform / AnalyzeAST take hyperex.Node.
-	// Concrete AST node types are unexported, so string-level APIs
-	// (Simplify, Expand, Inline, Analyze, …) are the public path.
-
 	fmt.Println("=== Simplify ===")
 	for _, expr := range []string{
 		"2 + 3 * 4",
@@ -42,6 +38,34 @@ func main() {
 	nested, err := hyperex.Inline("let a = 1; let b = a + 2; a + b")
 	must(err)
 	fmt.Printf("  %q -> %q\n", "let a = 1; let b = a + 2; a + b", nested)
+
+	fmt.Println("\n=== Tokenize (Studio highlight stream) ===")
+	toks, err := hyperex.Tokenize(`let x = price >= 10 // comment`)
+	must(err)
+	for _, t := range toks {
+		if t.Type == hyperex.TokenEOF {
+			continue
+		}
+		fmt.Printf("  %-8s lit=%q line=%d col=%d\n", t.Type, t.Lit, t.Line, t.Column)
+	}
+
+	fmt.Println("\n=== Parse / Walk / ASTToString ===")
+	// Concrete AST types are unexported. Parse returns an opaque Node for tooling.
+	src := `price * qty + fee`
+	node, err := hyperex.Parse(src)
+	must(err)
+	fmt.Printf("  ASTToString: %s\n", hyperex.ASTToString(node))
+
+	var nodes int
+	hyperex.Walk(node, func(_ hyperex.Node) bool {
+		nodes++
+		return true
+	})
+	fmt.Printf("  Walk node count: %d\n", nodes)
+
+	// Transform replaces subtrees; identity pass shown here.
+	same := hyperex.Transform(node, func(n hyperex.Node) hyperex.Node { return n })
+	fmt.Printf("  Transform(identity): %s\n", hyperex.ASTToString(same))
 }
 
 func must(err error) {

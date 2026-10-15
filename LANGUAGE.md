@@ -1,10 +1,10 @@
 # HyperEx Language Specification
 
 > Normative English specification of the HyperEx expression language for `github.com/aasyanov/hyperex`.  
-> Document version: 1.0.0 (2026-08).  
-> Number/sandbox contracts: [AUDIT.md](AUDIT.md). Engine API: [doc.go](doc.go). History: [CHANGELOG.md](CHANGELOG.md).
+> Document version: 1.5.0 (2026-10).  
+> Engine overview / API: [README.md](README.md) · [doc.go](doc.go). History: [CHANGELOG.md](CHANGELOG.md).
 
-This document describes **expression syntax and semantics**. Host options (`WithSandbox`, `WithStrictMode`, `WithOperator`, etc.) are **not language syntax**; see §11.
+This document describes **expression syntax and semantics**. Host options (`WithSandbox`, `WithStrictMode`, `WithOperator`, etc.) are **not language syntax**; see §11 (numeric and sandbox contracts live there too).
 
 On conflict with the README or examples, **this specification wins** (along with the implementation code).
 
@@ -20,7 +20,7 @@ program  ::=  expression  EOF
 
 Conditionality is via the ternary operator `? :`, coalesce `??`, short-circuit `&&`/`||`/`and`/`or`, and higher-order functions. Name binding is via `let` / destructuring (these are still expression forms).
 
-The evaluation result is a runtime `Value` of one of the kinds (§3). Integers are `int64`; on arithmetic overflow they promote to `float64` (no wrap-around). Number and sandbox details: [AUDIT.md](AUDIT.md) §4–§5.
+The evaluation result is a runtime `Value` of one of the kinds (§3). Integers are `int64`; on arithmetic overflow they promote to `float64` (no wrap-around). Numeric model: §3.5; sandbox / Secure: §11.
 
 ```mermaid
 flowchart LR
@@ -83,13 +83,13 @@ Escapes in `"` / `'`: `\n` `\r` `\t` `\\` `\"` `\'` `\0` `\uXXXX` (exactly 4 hex
 ### 2.5. Keywords
 
 ```text
-true  false  nil  null  in  not  and  or  let  if  else
+true  false  nil  in  not  and  or  let  if  else
 ```
 
 | Lexeme | Token / meaning |
 |--------|-----------------|
 | `true` / `false` | bool literals |
-| `nil` / `null` | the same runtime `nil` |
+| `nil` | nil literal |
 | `in` | membership operator |
 | `not` | unary `!` or part of `not in` |
 | `and` / `or` | synonyms for `&&` / `\|\|` |
@@ -130,9 +130,15 @@ The lexer recognizes these; the parser **does not use** them:
 | `array` | `[]any` | `"array"` |
 | `map` | `map[string]any` | `"map"` |
 | `function` | closure / builtin / host fn | `"function"` |
+| `time` | UTC instant as **int64** unix nanoseconds in `bits` | `"time"` |
+| `duration` | **int64** nanoseconds in `bits` | `"duration"` |
 | `any` | external host value | host type name or `"nil"` |
 
-`kindAny` appears from the env for non-JSON-like Go values (structs, etc.). In a **Secure** sandbox, access to `any` is restricted — see [AUDIT.md](AUDIT.md) and §11.
+`NewValue(time.Time)` → `time` (UTC Absolute; monotonic stripped via `UnixNano`).  
+`NewValue(time.Duration)` → `duration`.  
+`kindAny` appears from the env for other non-JSON-like Go values (structs, etc.). In a **Secure** sandbox, `time.Time` / `time.Duration` are accepted; other structs remain rejected — see §11.
+
+There is **no** `now()` builtin (host injects wall clock into the env).
 
 ### 3.2. Truthiness (`Value.Bool`)
 
@@ -144,6 +150,7 @@ The lexer recognizes these; the parser **does not use** them:
 | `float` | `0.0` |
 | `string` | `""` |
 | `array` / `map` | length 0 |
+| `time` / `duration` | `bits == 0` |
 | other | `ptr == nil` |
 
 Used by: `!` / `not`, `&&` / `||`, ternary condition, `filter` / `all` / `any` / …, VM jumps.
@@ -153,7 +160,7 @@ Used by: `!` / `not`, `&&` / `||`, ternary condition, `filter` / `all` / `any` /
 1. Different kinds: equal **only** if both are numbers → compare as float.
 2. Same kind:
    - `nil` — always equal;
-   - `bool` / `int` / `float` — by bits (`bits`);
+   - `bool` / `int` / `float` / `time` / `duration` — by bits (`bits`);
    - `string` — by contents;
    - `array` / `map` — deep comparison;
    - otherwise — pointer identity.
@@ -165,6 +172,8 @@ Used by: `!` / `not`, `&&` / `||`, ternary condition, `filter` / `all` / `any` /
 | Pair | Rule |
 |------|------|
 | both numbers | compare as float |
+| both `time` | instant order (unix ns) |
+| both `duration` | ns order |
 | both strings | lexicographic |
 | otherwise | `Equal` → 0; else **−1** (incomparable → arbitrary −1) |
 
@@ -174,11 +183,12 @@ Used by `min`/`max`/`sort`/`between`/operators `<` `<=` `>` `>=`.
 
 - Expression integer type: **`int64`**.
 - Overflow of `+`/`-`/`*` (and related cases) → promote to **`float64`** (no modular wrap).
-- Integer division `/` — truncates toward zero; `/0` → error.
+- Integer division `/` — truncates toward zero; `/0` → error. Under host option `WithNumericMode(NumericFloat64)`, numeric `/` (and `+,-,*,%,**`, unary `-`) yield **`float64`** — so `1/2` → `0.5` (default remains `0`).
 - `ceil` / `floor` / `round` usually return `int64`; NaN/Inf/out of int64 → `float64`.
 - `fromJSON`: JSON numbers → float; to int64 only for “safe” integers \(|n| \le 2^{53}-1\).
+- Host `WithNonFinite(NonFiniteError)` rejects successful Eval returning NaN/Inf (`ErrNonFinite`).
 
-Normative: [AUDIT.md](AUDIT.md) §4.
+Host options that change arithmetic / finiteness: §11.
 
 ---
 
@@ -281,15 +291,18 @@ Compilation: jump on left-hand truthiness; right-hand is not evaluated on short-
 
 | Op | Behavior |
 |----|----------|
-| `+` | string+string → concat; array+array → concat; int+int overflow → float; mixed numbers → float |
-| `-` `*` | overflow → float; `*` also `string * int` (repeat, ~10MB limit) |
-| `/` | int/int trunc toward 0; otherwise float; `/0` error |
+| `+` | string+string → concat; array+array → concat; int+int overflow → float; mixed numbers → float; **temporal:** `t+d` / `d+t` → time; `d+d` → duration; `t+t` → **error**; string+time → **error** (no silent concat) |
+| `-` | numeric as before; **temporal:** `t-d` → time; `t-t` → duration; `d-d` → duration |
+| `*` | overflow → float; `*` also `string * int` (repeat, ~10MB limit); `d*n` / `n*d` → duration |
+| `/` | int/int trunc toward 0; otherwise float; `/0` error; `d/n` → duration |
 | `%` | int `%`; otherwise `math.Mod`; `%0` error |
 | `**` | int^non-negative int without overflow, else `math.Pow` float |
-| unary `-` | `-MinInt64` → float |
+| unary `-` | `-MinInt64` → float; duration negation; time negation → **error** |
 | `&` `\|` `^` `~` `<<` `>>` `>>>` | via `.Int()`; shifts: negatives rejected; `>>>` unsigned |
 
 There is **no** unary `+`.
+
+Calendar fields are **not** operators — use builtins (`timeHour`, `timeWeekday`, …). `timeWeekday` uses Go’s Sunday=0 … Saturday=6.
 
 ---
 
@@ -304,7 +317,7 @@ Every construct is a subexpression of a single program.
 3.14        → float
 "hi"        → string
 true/false  → bool
-nil / null  → nil
+nil         → nil
 ```
 
 ### 5.2. Identifier
@@ -514,7 +527,7 @@ With `Sandbox.ReadOnly`, writes via `opStoreVar` are forbidden → `let`/destruc
 
 ## 8. Built-in functions
 
-Catalog from unexported `defaultBuiltins()` — **76** names (including alias `size` ≡ `len`). There is no public `DefaultBuiltins` API ([AUDIT.md](AUDIT.md) §3.1b).
+Catalog from unexported `defaultBuiltins()` — **100** names. Public discovery: `BuiltinNames()` (sorted copy) and `IsBuiltin(name)`. There is no public `DefaultBuiltins` map API.
 
 Below: name, signature, behavior/edges. `HO` = requires a `kindFunc` callback.
 
@@ -535,12 +548,11 @@ Below: name, signature, behavior/edges. `HO` = requires a `kindFunc` callback.
 | `sin` | `(x)` | float |
 | `cos` | `(x)` | float |
 
-### 8.2. String / length (14 + alias)
+### 8.2. String / length (13)
 
 | Name | Signature | Behavior / edges |
 |------|-----------|------------------|
 | `len` | `(x)` | runes for string; len arr/map; otherwise 0 |
-| `size` | `(x)` | **alias** `len` |
 | `upper` | `(x)` | via `.String()` (coercion) |
 | `lower` | `(x)` | same |
 | `trim` | `(s)` | TrimSpace |
@@ -620,8 +632,8 @@ Also HO: `all`/`any`/`none`/`one`(arr, pred) — see §8.4.
 |------|-----------|------------------|
 | `print` | `(…)` | println; returns **nil** |
 | `sprintf` | `(fmt, …)` | formatting |
-| `keys` | `(map)` | order **unspecified** |
-| `values` | `(map)` | order **unspecified** |
+| `keys` | `(map)` | keys **sorted** (lexicographic string order) |
+| `values` | `(map)` | values in the **same sorted key order** as `keys` |
 | `clamp` | `(v, min, max)` | int path if all int, else float |
 | `between` | `(v, min, max)` | inclusive via `Compare` |
 | `hasKey` | `(map, key)` | |
@@ -639,16 +651,53 @@ Also HO: `all`/`any`/`none`/`one`(arr, pred) — see §8.4.
 | `groupBy` | `(arr, keyFn)` HO | `keyFn(elem)` → string; `[{key, items},…]` insertion order |
 | `sortBy` | `(arr, keyFn[, desc])` HO | numeric keys or else strings |
 | `toJSON` | `(v)` | Marshal |
-| `fromJSON` | `(s)` | Unmarshal; safe int → int64 ([AUDIT.md](AUDIT.md) §4.3) |
+| `fromJSON` | `(s)` | Unmarshal; safe int → int64 (§3.5: \(|n| \le 2^{53}-1\)) |
 
-### 8.8. Full name list (for scanning)
+### 8.8. Time / duration (20)
+
+No `now()` — host puts wall clock in the env. All calendar fields are **UTC**.
+
+| Name | Signature | Behavior / edges |
+|------|-----------|------------------|
+| `timeUTC` | `(y, m, d, h, min, s)` | construct UTC instant |
+| `timeUnix` | `(sec)` | from unix seconds |
+| `timeUnixNano` | `(ns)` | from unix nanoseconds |
+| `unix` / `unixNano` | `(t)` | extract int64 |
+| `timeYear` / `timeMonth` / `timeDay` | `(t)` | UTC calendar fields |
+| `timeHour` / `timeMinute` / `timeSecond` | `(t)` | UTC clock fields |
+| `timeWeekday` | `(t)` | Sunday=0 … Saturday=6 (Go) |
+| `timeAdd` | `(t, d)` | same as `t + d` |
+| `durationSeconds` / `durationMs` / `durationNs` | `(n)` | construct duration |
+| `durSeconds` | `(d)` | float seconds |
+| `durMs` / `durNs` | `(d)` | int64 extract |
+
+### 8.9. Quality (6) — map-shaped `{v,q}`
+
+No new runtime kind. Host binds a process value as a map:
+
+```go
+env["temp"] = map[string]any{"v": 12.5, "q": float64(0)} // or int64 / uint32
+```
+
+Class bits use exported `QualityClassMask` (`0xC0000000`) — OPC UA StatusCode–compatible convention: Good `(code&mask)==0`, Uncertain `==0x40000000`, Bad `==0x80000000`.
+
+| Name | Signature | Behavior / edges |
+|------|-----------|------------------|
+| `v` | `(x)` | map with key `"v"` → that value; bare number/bool/string/time/duration/array → `x`; `nil`→`nil`; else error |
+| `q` | `(x)` | map with key `"q"` → numeric q; bare number → itself; else error |
+| `isGood` / `isBad` / `isUncertain` | `(x)` | map `{…,q}` **or** bare qcode number; class bits via `QualityClassMask` |
+| `withQ` | `(val, qcode)` | → map `{v,q}` (`q` as int64 or float64) |
+
+**No arithmetic auto-unwrap:** `temp + 1` on a map keeps failing. Formulas must use `v(temp) + 1`.
+
+### 8.10. Full name list (for scanning)
 
 ```text
 # Math
 abs min max ceil floor round sqrt pow log exp sin cos
 
 # String / length
-len size upper lower trim trimLeft trimRight split join
+len upper lower trim trimLeft trimRight split join
 contains startsWith endsWith replace substr indexOf
 
 # Array
@@ -667,6 +716,14 @@ int float string bool type isNil
 print sprintf keys values clamp between hasKey empty notEmpty
 default coalesce repeat range zip chunk compact truthy pluck
 groupBy sortBy toJSON fromJSON
+
+# Time / duration
+timeUTC timeUnix timeUnixNano unix unixNano
+timeYear timeMonth timeDay timeHour timeMinute timeSecond timeWeekday
+timeAdd durationSeconds durationMs durationNs durSeconds durMs durNs
+
+# Quality
+v q isGood isBad isUncertain withQ
 ```
 
 `DisableBuiltins` on the engine clears this set at init (custom functions can still be added) — host option, §11.
@@ -713,12 +770,14 @@ One token `|`, two semantics. The parser chooses by **AST shape** (heuristic).
 
 ### 9.4. Warnings (`Analysis.Warnings`)
 
-Stable English messages:
+Stable English messages (also exported as `WarnAmbiguousBitwiseOr` / `WarnBuiltinNamePipe` for matching without hardcoding):
 
-| Condition | Message (sense) |
-|-----------|-----------------|
-| bitwise `\|` between two idents, right-hand **not** a default builtin | ambiguous \| … treated as bitwise OR |
-| pipe chosen by “right-hand ident = default builtin” rule | pipe chosen because right-hand identifier matches a default builtin name |
+| Condition | Constant | Message (sense) |
+|-----------|----------|-----------------|
+| bitwise `\|` between two idents, right-hand **not** a default builtin | `WarnAmbiguousBitwiseOr` | ambiguous \| … treated as bitwise OR |
+| pipe chosen by “right-hand ident = default builtin” rule | `WarnBuiltinNamePipe` | pipe chosen because right-hand identifier matches a default builtin name |
+
+`Analysis.Warnings` remains `[]string` (same English strings).
 
 ### 9.5. Antipatterns
 
@@ -754,7 +813,11 @@ Explicit syntax non-goals:
 | Classes, modules, import | — |
 | Multiple expressions in one unit | one expr through EOF |
 
-Tools `Simplify` / `Analyze` / `Extract*` / `Validate` / `Walk` / `Transform` are an **API over the AST**, not part of the language.
+Tools `Simplify` / `Analyze` / `Extract*` / `Validate` / `Walk` / `Transform` / `Parse` / `Tokenize` are an **API over the AST / token stream**, not part of the language.
+
+- `Parse(expr) (Node, error)` — opaque root node for `Walk` / `Transform` / `ASTToString` (concrete AST types stay unexported).
+- `Tokenize(src) ([]Token, error)` — stable public kinds for highlighting (`Ident`, `Number`, `String`, `Operator`, `Keyword`, `Punct`, `Comment`, `EOF`, `Illegal`).
+- `ExtractVariables` keeps historical behavior (`Alarm.Fire` lists both `Alarm` and `Fire`). `ExtractVariablesOpts(expr, ExtractMemberRoots())` lists member roots only (`Alarm`).
 
 ---
 
@@ -766,15 +829,21 @@ Everything below is **not language syntax**, but host configuration. It changes 
 |---------------|--------------------------------|
 | `WithSandbox` / limits | `MaxOps`, `Timeout`, `MaxMemory` (periodically), `MaxStackDepth` / `MaxCallDepth` — abort long computations |
 | `AllowedFuncs` / `DeniedFuncs` | allow/deny calls by **name**; deny wins |
-| **Secure** (`WithSecureSandbox`) | env → JSON-like; forbid member/index/slice/`in` on `kindAny`; forbid calling unnamed Go functions from env; details and threat model — [AUDIT.md](AUDIT.md) §5 |
+| **Secure** (`WithSecureSandbox`) | env → JSON-like **plus** `time.Time` / `time.Duration`; forbid member/index/slice/`in` on `kindAny`; forbid calling unnamed Go functions from env; other structs rejected. Best-effort only — not process isolation |
 | `ReadOnly` | forbid `let`/destructuring (`ErrAssignmentNotAllowed`) |
 | `DisableBuiltins` | empty default builtins set at init |
 | `WithStrictMode` | strict conversions: typed `Eval*` / some numeric paths → `ErrInvalidConversion` instead of silent coerce |
+| `WithNumericMode(NumericFloat64)` | numeric `+,-,*,/,%,**` and unary `-` → `float64` result (`1/2` → `0.5`); string `+` and time/duration ops unchanged. Default `NumericDefault` = v1.0 int-preserving arithmetic |
+| `WithNonFinite(NonFiniteError)` | successful Eval must not return NaN/Inf; error matches `ErrNonFinite`. Default `NonFiniteAllow` |
+| `WithMaxSourceBytes(n)` | `Compile` rejects `len(expr) > n` with `ErrSourceTooLarge` (`n <= 0` = unlimited) |
+| `AsBool` / `AsInt` / `AsFloat` / `AsString` | compile hints; `Program.ResultHint()` reflects them; Eval converts the result |
+| `Program.EvalValue` | returns `Value` without `Interface()` boxing (additive; `Eval` unchanged) |
 | `WithOperator(op, fnName)` | overload binaries (while preserving short-circuit of `&&`/`\|\|`) — changes compilation path |
-| `WithFunction(s)` | add host functions (**trusted** escape hatch, [AUDIT.md](AUDIT.md) §1–2) |
+| `WithFunction(s)` | add host functions (**trusted** escape hatch — no forced MaxOps tax; may do arbitrary I/O) |
+| `WithSafeFunction` / `WithSafeFunctionMeta` | host functions that **count against MaxOps** (default tax 16 per call); DeniedFuncs/AllowedFuncs apply by name; Pure is docs-only |
 | `ctx` cancel / sandbox timeout | whichever fires first wins |
 
-The sandbox does **not** provide process isolation and does not make arbitrary `WithFunction` “safe”.
+The sandbox does **not** provide process isolation and does not make arbitrary `WithFunction` “safe”. Prefer `WithSafeFunction` for domain helpers under Secure + MaxOps.
 
 ---
 
@@ -785,24 +854,64 @@ Numbered list (inventory §8):
 1. **`|` pipe vs bitwise** — heuristic §9; `x | y` is OR, `xs | sum` / `x | f()` is pipe. See `Analysis.Warnings`.
 2. **`??` has prec 12 (higher than `+`)** — `a + b ?? c` ≡ `a + (b ?? c)`, not `(a + b) ?? c`.
 3. **`&&` / `||` return an operand** (not bool). Do not confuse with `!`, which always yields bool.
-4. **`nil` and `null`** — one runtime nil; string representation is `"nil"`.
+4. **`nil`** — string representation is `"nil"`.
 5. **Dead lexemes** `if`/`else`/`++`/`--`/`->` — reserved/noise with no semantics.
 6. **`contains` ≠ `in`** — builtin is strings-only (via stringify); `in` works more broadly with collections/substrings.
 7. **`all` / `any` / `none` / `one`** — two forms: `(arr)` = element truthiness; `(arr, pred)` = HO predicate (`kindFunc`, like `filter`). Do not confuse the forms.
-8. **Order of `keys` / `values`** for maps is **unspecified**.
+8. **`keys` / `values`** for maps are ordered by **sorted string keys** (deterministic).
 9. **`equal` / `Compare` on float/NaN/incomparables** — bit equality; for incomparables Compare yields −1.
-10. **Integer division** truncates toward zero; mixed `+` with non-number/non-string/non-array → error.
-11. **Strict mode** — host option; changes conversion errors, not the grammar.
+10. **Integer division** truncates toward zero (default); under `NumericFloat64`, `1/2` → `0.5`. Mixed `+` with non-number/non-string/non-array → error.
+11. **Strict mode** / **NumericMode** / **NonFinite** — host options; change conversion/arithmetic/result policy, not the grammar.
 12. **`#` and `$n` in lambdas** — part of the language, easy to miss in a “bare” grammar.
 13. **Broken numeric lexemes** (`0x`, `1e`) — lexer may accept, parser rejects.
 14. **`upper` / `lower` / `contains`** coerce via `.String()` — non-strings “work” via formatting.
 15. **`WithOperator`** — host feature; changes compilation of binary operators.
 16. **Public name `DefaultBuiltins` does not exist** — say “default builtin set” / `defaultBuiltins`.
 17. **Chain `1..2..3`** — left-assoc `(1..2)..3`; non-int start coerces via `Int()` (often → `0..n`).
+18. **Quality maps are not numbers** — `temp + 1` fails; write `v(temp) + 1`. Class checks: `isGood(temp)` or bare `isGood(qcode)`.
 
 ---
 
-## 13. Quick cheat sheet
+## 13. Cookbook — SCADA quality bindings
+
+Two host binding shapes work with the same builtins:
+
+```text
+// Separate value + qcode channels:
+env["temp"] = 12.5
+env["temp_q"] = 0x00000000   // Good qcode
+
+// Map-shaped process value:
+env["temp"] = map[string]any{"v": 12.5, "q": float64(0)}
+```
+
+Formulas:
+
+```text
+isGood(temp_q) && temp > 10          // bare qcode channel
+isGood(temp) && v(temp) > 10         // map-shaped; ExtractVariables sees "temp"
+isGood(temp) ? v(temp) : v(backup)   // pick by quality class
+```
+
+`isGood` / `isBad` / `isUncertain` accept either a bare qcode number or a map with `"q"`.
+
+---
+
+## 14. Cookbook — SCADA hot path (performance)
+
+Canonical per-sample loop for integrator / PDM calc (no new public API — host-side pattern):
+
+1. **Compile once** at Apply / config load → reuse `Program`.
+2. Prefer **`map[string]any`**, pre-sized; **update or clear keys** in the loop (avoid allocating a new map each tick; avoid struct env on hot path).
+3. Prefer **`EvalValue` + `TryFloat`** (or `EvalFloat`) under **`NumericFloat64`** — Secure presets (`NewSecureCalc` / `PresetSecureCalc`) already set this plus `NonFiniteError`.
+4. Avoid lambdas / higher-order builtins and unnecessary `WithFunction` on the per-sample path; size MaxOps / Timeout with headroom.
+5. There is **no** exported `BatchEval` or `EnvPool` — loop `Eval*` / `EvalValue` yourself.
+
+Runnable sketch: [examples/scada_hotpath/](examples/scada_hotpath/). Related: [examples/scada_secure/](examples/scada_secure/), [examples/scada_quality/](examples/scada_quality/). Package benches: `BenchmarkSCADA_*` in `bench_scada_test.go`.
+
+---
+
+## 15. Quick cheat sheet
 
 ### Model
 
@@ -853,7 +962,7 @@ overflow int → float
 
 ```text
 math:     abs min max ceil floor round sqrt pow log exp sin cos
-string:   len size upper lower trim* split join contains startsWith
+string:   len upper lower trim* split join contains startsWith
           endsWith replace substr indexOf
 array:    first last take skip reverse sort unique concat flatten
 agg:      sum avg count all any none one   # + optional pred form
@@ -862,8 +971,10 @@ type:     int float string bool type isNil
 util:     print sprintf keys values clamp between hasKey empty notEmpty
           default coalesce repeat range zip chunk compact truthy pluck
           groupBy sortBy toJSON fromJSON
+quality:  v q isGood isBad isUncertain withQ
+time:     timeUTC timeUnix … durSeconds durMs durNs
 ```
 
 ### Host ≠ language
 
-Sandbox / Secure / ReadOnly / StrictMode / Operator overload / custom functions — engine options. Contracts: [AUDIT.md](AUDIT.md), API: [doc.go](doc.go), history: [CHANGELOG.md](CHANGELOG.md).
+Sandbox / Secure / ReadOnly / StrictMode / Operator overload / `WithFunction` / `WithSafeFunction` — engine options (§11). API overview: [README.md](README.md) / [doc.go](doc.go). History: [CHANGELOG.md](CHANGELOG.md).

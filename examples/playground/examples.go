@@ -45,7 +45,6 @@ func GetAllExamples() []Category {
 				{Name: "Boolean true", Expression: litTrue, Description: "Boolean true", Expected: litTrue},
 				{Name: "Boolean false", Expression: litFalse, Description: "Boolean false", Expected: litFalse},
 				{Name: "Nil", Expression: litNil, Description: "Nil value", Expected: litNil},
-				{Name: "Null alias", Expression: "null", Description: "Null (alias for nil)", Expected: litNil},
 			},
 		},
 
@@ -95,7 +94,7 @@ func GetAllExamples() []Category {
 				{Name: "Array equality", Expression: "[1, 2] == [1, 2]", Description: "Deep array equality", Expected: litTrue},
 				{Name: "Array not equal", Expression: "[1, 2] != [1, 3]", Description: "Arrays differ", Expected: litTrue},
 				{Name: "Map equality", Expression: `{"a": 1} == {"a": 1}`, Description: "Deep map equality", Expected: litTrue},
-				{Name: "Nil comparison", Expression: "nil == null", Description: "nil equals null", Expected: litTrue},
+				{Name: "Nil comparison", Expression: "nil == nil", Description: "nil self-equality", Expected: litTrue},
 				{Name: "Chain comparison", Expression: "1 < 2 && 2 < 3", Description: "Chained comparisons", Expected: litTrue},
 			},
 		},

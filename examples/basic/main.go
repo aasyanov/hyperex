@@ -1,4 +1,6 @@
-// Package main demonstrates package-level hyperex Eval helpers.
+// One-shot Eval helpers: package-level vs Engine-owned.
+// Prefer Compile + Program.Eval when the same expression runs many times
+// (see compile_reuse / scada_hotpath).
 package main
 
 import (
@@ -11,36 +13,47 @@ import (
 func main() {
 	ctx := context.Background()
 
-	result, err := hyperex.Eval(ctx, `2 + 2 * 3`)
-	must(err)
-	fmt.Printf("Eval:           %v\n", result)
+	env := map[string]any{
+		"price":    12.5,
+		"qty":      4,
+		"discount": 0.1,
+		"score":    72,
+		"name":     "hyperex",
+	}
 
-	n, err := hyperex.EvalInt(ctx, `10 * quantity`, map[string]any{"quantity": 3})
+	fmt.Println("=== Package-level (default engine) ===")
+	// Convenient for ad-hoc checks; each call compiles internally.
+	total, err := hyperex.Eval(ctx, `price * qty * (1 - discount)`, env)
 	must(err)
-	fmt.Printf("EvalInt:        %d\n", n)
+	fmt.Printf("  Eval:       %v\n", total)
 
-	ok, err := hyperex.EvalBool(ctx, `score >= 50`, map[string]any{"score": 72})
+	ok, err := hyperex.EvalBool(ctx, `score >= 50`, env)
 	must(err)
-	fmt.Printf("EvalBool:       %v\n", ok)
+	fmt.Printf("  EvalBool:   %v\n", ok)
 
-	f, err := hyperex.EvalFloat(ctx, `3.5 * 2`)
+	n, err := hyperex.EvalInt(ctx, `qty * 10`, env)
 	must(err)
-	fmt.Printf("EvalFloat:      %v\n", f)
+	fmt.Printf("  EvalInt:    %d\n", n)
 
-	s, err := hyperex.EvalString(ctx, `upper(name)`, map[string]any{"name": "hyperex"})
+	f, err := hyperex.EvalFloat(ctx, `price * qty`, env)
 	must(err)
-	fmt.Printf("EvalString:     %q\n", s)
+	fmt.Printf("  EvalFloat:  %v\n", f)
 
-	fmt.Printf("MustEval:       %v\n", hyperex.MustEval(ctx, `len([1, 2, 3])`))
+	s, err := hyperex.EvalString(ctx, `upper(name)`, env)
+	must(err)
+	fmt.Printf("  EvalString: %q\n", s)
 
-	engine := hyperex.New()
-	er, err := engine.Eval(ctx, `1 + 1`)
+	// Must* panics on error by contract — use only when failure is a bug.
+	fmt.Printf("  MustEval:   %v\n", hyperex.MustEval(ctx, `len([1, 2, 3])`))
+
+	fmt.Println("\n=== Engine-owned one-shot ===")
+	// Same Eval* surface, but options (sandbox, functions, numeric mode, …)
+	// live on the Engine for the lifetime of the process.
+	eng := hyperex.New()
+	gate, err := eng.EvalBool(ctx, `score >= 50 && qty > 0`, env)
 	must(err)
-	fmt.Printf("Engine.Eval:    %v\n", er)
-	ei, err := engine.EvalInt(ctx, `2 * 3`)
-	must(err)
-	fmt.Printf("Engine.EvalInt: %d\n", ei)
-	fmt.Printf("Engine.MustEval:%v\n", engine.MustEval(ctx, `true && false`))
+	fmt.Printf("  Engine.EvalBool: %v\n", gate)
+	fmt.Printf("  Engine.MustEval: %v\n", eng.MustEval(ctx, `price + qty`, env))
 }
 
 func must(err error) {

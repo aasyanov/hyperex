@@ -579,14 +579,50 @@ func needsParens(node Node) bool {
 	return false
 }
 
+// ExtractOption configures [ExtractVariablesOpts].
+type ExtractOption func(*extractConfig)
+
+type extractConfig struct {
+	memberRootsOnly bool
+}
+
+// ExtractMemberRoots strips property identifiers under non-computed member
+// access when extracting variables. For `Alarm.Fire`, only `Alarm` is listed
+// (not `Fire`). Computed access (`obj[key]`) still extracts names from `key`.
+// Default [ExtractVariables] keeps the historical behavior (Fire is listed).
+func ExtractMemberRoots() ExtractOption {
+	return func(c *extractConfig) {
+		c.memberRootsOnly = true
+	}
+}
+
 // ExtractVariables returns all variable names used in an expression.
-// This is a convenience wrapper around Analyze.
+// This is a convenience wrapper around Analyze (default options).
 func ExtractVariables(expr string) ([]string, error) {
-	analysis, err := Analyze(expr)
+	return ExtractVariablesOpts(expr)
+}
+
+// ExtractVariablesOpts is [ExtractVariables] with optional extraction policy.
+func ExtractVariablesOpts(expr string, opts ...ExtractOption) ([]string, error) {
+	cfg := &extractConfig{}
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(cfg)
+	}
+	parser := newParser(expr)
+	ast, err := parser.parse()
 	if err != nil {
 		return nil, err
 	}
-	return analysis.Variables, nil
+	a := &Analysis{
+		Complexity:      ComplexityConstant,
+		IsPure:          true,
+		memberRootsOnly: cfg.memberRootsOnly,
+	}
+	a.analyze(ast, 0)
+	return uniqueStrings(a.Variables), nil
 }
 
 // ExtractFunctions returns all function names called in an expression.

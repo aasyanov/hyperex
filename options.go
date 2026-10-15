@@ -11,16 +11,36 @@ const (
 	defaultMaxCallDepth    = 1000
 	defaultStrictMode      = false
 	defaultTypeCheck       = false
+	defaultNumericMode     = NumericDefault
+	defaultNonFiniteMode   = NonFiniteAllow
+	// defaultSafeFuncOpsTax is the per-call ops tax for WithSafeFunction.
+	// Tax formula is 1+MaxOwnOps, so WithSafeFunction sets MaxOwnOps = tax-1.
+	defaultSafeFuncOpsTax int64 = 16
 )
 
 // Option configures an Engine via the functional options pattern.
 // Nil Option values passed to New are ignored.
 type Option func(*engineConfig)
 
+// SafeFuncMeta describes a host function registered via [WithSafeFunction] /
+// [WithSafeFunctionMeta]. Pure is documentation-only (best-effort claim);
+// MaxOwnOps contributes to the per-call ops tax counted against MaxOps.
+type SafeFuncMeta struct {
+	// MaxOwnOps is added to the base tax of 1 per call (tax = 1 + MaxOwnOps).
+	// Negative values are clamped so tax is at least 1.
+	MaxOwnOps int64
+	// Pure is a documentation / test obligation claim only; the VM does not enforce purity.
+	Pure bool
+}
+
 // engineConfig holds the configuration for an Engine instance.
 type engineConfig struct {
 	// Custom functions to add to the environment
 	functions map[string]any
+
+	// safeFuncs marks functions registered via WithSafeFunction* (ops tax on call).
+	// Names absent from this map that appear in functions are trusted (WithFunction).
+	safeFuncs map[string]SafeFuncMeta
 
 	// Custom operators
 	operators map[string]string // maps operator to function name
@@ -42,6 +62,15 @@ type engineConfig struct {
 	// Strict mode - errors on invalid type conversions instead of silent defaults
 	strictMode bool
 
+	// Numeric arithmetic policy (default = v1.0 int-preserving)
+	numericMode NumericMode
+
+	// Non-finite float result policy (default = allow NaN/Inf)
+	nonFiniteMode NonFiniteMode
+
+	// maxSourceBytes rejects Compile when len(expr) exceeds n (0 = unlimited).
+	maxSourceBytes int
+
 	// Type environment for typed compilation
 	envType reflect.Type
 	envVal  any
@@ -51,6 +80,7 @@ type engineConfig struct {
 func defaultConfig() *engineConfig {
 	return &engineConfig{
 		functions:       make(map[string]any),
+		safeFuncs:       make(map[string]SafeFuncMeta),
 		operators:       make(map[string]string),
 		optimize:        defaultOptimize,
 		constantFolding: defaultConstantFolding,
@@ -58,11 +88,16 @@ func defaultConfig() *engineConfig {
 		maxCallDepth:    defaultMaxCallDepth,
 		strictMode:      defaultStrictMode,
 		typeCheck:       defaultTypeCheck,
+		numericMode:     defaultNumericMode,
+		nonFiniteMode:   defaultNonFiniteMode,
 	}
 }
 
 // WithFunction adds a custom function to the expression environment.
 // The function can be called by name in expressions.
+//
+// Trusted escape hatch: no forced MaxOps tax beyond normal bytecode accounting.
+// Prefer [WithSafeFunction] for domain helpers under Secure / MaxOps budgets.
 //
 // Default: no custom functions.
 //
@@ -75,10 +110,13 @@ func defaultConfig() *engineConfig {
 func WithFunction(name string, fn any) Option {
 	return func(c *engineConfig) {
 		c.functions[name] = fn
+		delete(c.safeFuncs, name) // trusted; clear any prior SafeFunction mark
 	}
 }
 
 // WithFunctions adds multiple custom functions at once.
+//
+// Each name is registered as trusted ([WithFunction] semantics).
 //
 // Default: no custom functions.
 //
@@ -94,8 +132,37 @@ func WithFunctions(funcs map[string]any) Option {
 	return func(c *engineConfig) {
 		for name, fn := range funcs {
 			c.functions[name] = fn
+			delete(c.safeFuncs, name)
 		}
 	}
+}
+
+// WithSafeFunction registers a host function that counts against MaxOps.
+// Each call adds defaultSafeFuncOpsTax ops (tax = 1+MaxOwnOps, so MaxOwnOps = tax-1).
+// AllowedFuncs / DeniedFuncs apply by name as for any other function.
+// Panic in the Go function becomes a RuntimeError (same as [WithFunction]).
+//
+// Pure is not enforced — the host must keep the function free of I/O if claiming purity.
+func WithSafeFunction(name string, fn any) Option {
+	return WithSafeFunctionMeta(name, fn, SafeFuncMeta{MaxOwnOps: defaultSafeFuncOpsTax - 1})
+}
+
+// WithSafeFunctionMeta is [WithSafeFunction] with explicit tax / purity metadata.
+// Per-call tax is 1+MaxOwnOps (minimum 1).
+func WithSafeFunctionMeta(name string, fn any, meta SafeFuncMeta) Option {
+	return func(c *engineConfig) {
+		c.functions[name] = fn
+		c.safeFuncs[name] = meta
+	}
+}
+
+// safeFuncOpsTax returns the ops charged per call for a SafeFunction registration.
+func safeFuncOpsTax(meta SafeFuncMeta) int64 {
+	tax := int64(1) + meta.MaxOwnOps
+	if tax < 1 {
+		return 1
+	}
+	return tax
 }
 
 // WithOperator overloads an operator with a custom function.
@@ -112,27 +179,6 @@ func WithFunctions(funcs map[string]any) Option {
 func WithOperator(op, fnName string) Option {
 	return func(c *engineConfig) {
 		c.operators[op] = fnName
-	}
-}
-
-// WithEnv specifies a typed environment for expressions and enables type checking.
-// Using a typed environment instead of map[string]any provides
-// compile-time type checking and can improve performance.
-//
-// Default: no typed environment; typeCheck remains false unless set separately.
-//
-// Example:
-//
-//	type Env struct {
-//	    X int     `expr:"x"`
-//	    Y float64 `expr:"y"`
-//	}
-//	engine := hyperex.New(hyperex.WithEnv(Env{}))
-func WithEnv(env any) Option {
-	return func(c *engineConfig) {
-		c.envType = reflect.TypeOf(env)
-		c.envVal = env
-		c.typeCheck = true // Enable type checking when typed env is provided
 	}
 }
 
@@ -180,7 +226,7 @@ func WithStrengthReduction(enabled bool) Option {
 }
 
 // WithTypeCheck enables compile-time type checking using the provided env struct.
-// This allows detecting type mismatches at compile time rather than runtime.
+// Detects type mismatches at compile time rather than runtime.
 //
 // Default: false.
 //
@@ -191,7 +237,6 @@ func WithStrengthReduction(enabled bool) Option {
 //	    Name  string `expr:"name"`
 //	}
 //	engine := hyperex.New(hyperex.WithTypeCheck(Env{}))
-//	// Now compilation will check that expressions use correct types
 func WithTypeCheck(envType any) Option {
 	return func(c *engineConfig) {
 		c.typeCheck = true
@@ -233,6 +278,19 @@ func WithStrictMode(strict bool) Option {
 	}
 }
 
+// WithMaxSourceBytes rejects [Engine.Compile] when len(expr) exceeds n bytes.
+// Values <= 0 disable the limit (default: unlimited).
+// Oversized sources return an error matching [ErrSourceTooLarge].
+func WithMaxSourceBytes(n int) Option {
+	return func(c *engineConfig) {
+		if n > 0 {
+			c.maxSourceBytes = n
+		} else {
+			c.maxSourceBytes = 0
+		}
+	}
+}
+
 // CompileOption configures a single Compile call.
 // Nil CompileOption values passed to Compile are ignored.
 type CompileOption func(*compileConfig)
@@ -249,15 +307,14 @@ type compileConfig struct {
 	optimize *bool
 }
 
-// AsBool specifies that the expression should return a boolean.
-// The compiler will verify and optimize for boolean return.
+// AsBool sets an eval-time conversion hint that the result should be bool.
 func AsBool() CompileOption {
 	return func(c *compileConfig) {
 		c.expectBool = true
 	}
 }
 
-// AsInt specifies that the expression should return an integer.
+// AsInt sets an eval-time conversion hint that the result should be int64.
 // Non-integer results will be converted to int64.
 func AsInt() CompileOption {
 	return func(c *compileConfig) {

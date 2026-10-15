@@ -125,7 +125,7 @@ func TestPredicateAgg_PipeExamples(t *testing.T) {
 }
 
 func TestPredicateAgg_BuiltinAndCustomPred(t *testing.T) {
-	// Wrap 1-arg builtins — HO always passes (elem, index), same as filter/map.
+	// Wrap 1-arg builtins - HO always passes (elem, index), same as filter/map.
 	got, err := EvalBool(context.Background(), `all(["a", "b"], x => notEmpty(x))`)
 	if err != nil {
 		t.Fatalf("builtin pred: %v", err)

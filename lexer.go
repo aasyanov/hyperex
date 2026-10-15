@@ -14,6 +14,10 @@ type lexer struct {
 	line   int // current line number (1-based)
 	column int // current column (1-based, in runes)
 
+	// emitComments, when true, yields tokenComment instead of skipping comments
+	// (used by public [Tokenize]; parsers leave this false).
+	emitComments bool
+
 	// Lookahead buffer
 	tokens []token
 	idx    int
@@ -96,48 +100,59 @@ func (l *lexer) nextToken() token {
 	l.skipWhitespace()
 
 	if l.pos >= len(l.input) {
-		return token{Type: tokenEOF, Line: l.line, Column: l.column}
+		return token{Type: tokenEOF, Line: l.line, Column: l.column, Offset: l.pos}
 	}
 
 	startLine := l.line
 	startCol := l.column
+	startOff := l.pos
 
 	ch := l.current()
 
 	// Check for single-line comments
 	if ch == '/' && l.peek() == '/' {
+		if l.emitComments {
+			return l.scanLineComment(startLine, startCol, startOff)
+		}
 		l.skipLineComment()
 		return l.nextToken()
 	}
 
 	// Check for multi-line comments
 	if ch == '/' && l.peek() == '*' {
+		if l.emitComments {
+			tok, err := l.scanBlockComment(startLine, startCol, startOff)
+			if err != nil {
+				return token{Type: tokenError, Value: err.Error(), Line: startLine, Column: startCol, Offset: startOff}
+			}
+			return tok
+		}
 		if err := l.skipBlockComment(); err != nil {
-			return token{Type: tokenError, Value: err.Error(), Line: startLine, Column: startCol}
+			return token{Type: tokenError, Value: err.Error(), Line: startLine, Column: startCol, Offset: startOff}
 		}
 		return l.nextToken()
 	}
 
 	// Identifiers and keywords
 	if isIdentStart(ch) {
-		return l.scanIdent(startLine, startCol)
+		return l.scanIdent(startLine, startCol, startOff)
 	}
 
 	// Numbers
 	if isDigit(ch) || (ch == '.' && isDigit(l.peek())) {
-		return l.scanNumber(startLine, startCol)
+		return l.scanNumber(startLine, startCol, startOff)
 	}
 
 	// Strings
 	if ch == '"' || ch == '\'' || ch == '`' {
-		return l.scanString(ch, startLine, startCol)
+		return l.scanString(ch, startLine, startCol, startOff)
 	}
 
 	// Operators and delimiters
-	return l.scanOperator(startLine, startCol)
+	return l.scanOperator(startLine, startCol, startOff)
 }
 
-func (l *lexer) scanIdent(line, col int) token {
+func (l *lexer) scanIdent(line, col, offset int) token {
 	start := l.pos
 	for l.pos < len(l.input) && isIdentChar(l.current()) {
 		l.advance()
@@ -147,18 +162,18 @@ func (l *lexer) scanIdent(line, col int) token {
 	// Check for keywords
 	if tokType, ok := keywords[value]; ok {
 		if tokType == tokenTrue || tokType == tokenFalse {
-			return token{Type: tokenBool, Value: value, Line: line, Column: col}
+			return token{Type: tokenBool, Value: value, Line: line, Column: col, Offset: offset}
 		}
-		if tokType == tokenNil || tokType == tokenNull {
-			return token{Type: tokenNil, Value: value, Line: line, Column: col}
+		if tokType == tokenNil {
+			return token{Type: tokenNil, Value: value, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokType, Value: value, Line: line, Column: col}
+		return token{Type: tokType, Value: value, Line: line, Column: col, Offset: offset}
 	}
 
-	return token{Type: tokenIdent, Value: value, Line: line, Column: col}
+	return token{Type: tokenIdent, Value: value, Line: line, Column: col, Offset: offset}
 }
 
-func (l *lexer) scanNumber(line, col int) token {
+func (l *lexer) scanNumber(line, col, offset int) token {
 	start := l.pos
 	isFloat := false
 
@@ -175,21 +190,21 @@ func (l *lexer) scanNumber(line, col int) token {
 			for l.pos < len(l.input) && isHexDigit(l.current()) {
 				l.advance()
 			}
-			return token{Type: tokenInt, Value: l.input[start:l.pos], Line: line, Column: col}
+			return token{Type: tokenInt, Value: l.input[start:l.pos], Line: line, Column: col, Offset: offset}
 		}
 		if ch == 'b' || ch == 'B' {
 			l.advance()
 			for l.pos < len(l.input) && (l.current() == '0' || l.current() == '1') {
 				l.advance()
 			}
-			return token{Type: tokenInt, Value: l.input[start:l.pos], Line: line, Column: col}
+			return token{Type: tokenInt, Value: l.input[start:l.pos], Line: line, Column: col, Offset: offset}
 		}
 		if ch == 'o' || ch == 'O' {
 			l.advance()
 			for l.pos < len(l.input) && l.current() >= '0' && l.current() <= '7' {
 				l.advance()
 			}
-			return token{Type: tokenInt, Value: l.input[start:l.pos], Line: line, Column: col}
+			return token{Type: tokenInt, Value: l.input[start:l.pos], Line: line, Column: col, Offset: offset}
 		}
 	}
 
@@ -216,12 +231,12 @@ func (l *lexer) scanNumber(line, col int) token {
 
 	value := l.input[start:l.pos]
 	if isFloat {
-		return token{Type: tokenFloat, Value: value, Line: line, Column: col}
+		return token{Type: tokenFloat, Value: value, Line: line, Column: col, Offset: offset}
 	}
-	return token{Type: tokenInt, Value: value, Line: line, Column: col}
+	return token{Type: tokenInt, Value: value, Line: line, Column: col, Offset: offset}
 }
 
-func (l *lexer) scanString(quote rune, line, col int) token {
+func (l *lexer) scanString(quote rune, line, col, offset int) token {
 	l.advance() // consume opening quote
 	start := l.pos
 	var result []byte
@@ -231,11 +246,11 @@ func (l *lexer) scanString(quote rune, line, col int) token {
 		if ch == quote {
 			if result != nil {
 				l.advance()
-				return token{Type: tokenString, Value: string(result), Line: line, Column: col}
+				return token{Type: tokenString, Value: string(result), Line: line, Column: col, Offset: offset}
 			}
 			value := l.input[start:l.pos]
 			l.advance()
-			return token{Type: tokenString, Value: value, Line: line, Column: col}
+			return token{Type: tokenString, Value: value, Line: line, Column: col, Offset: offset}
 		}
 
 		if ch == '\\' && quote != '`' {
@@ -245,7 +260,7 @@ func (l *lexer) scanString(quote rune, line, col int) token {
 			}
 			l.advance()
 			if l.pos >= len(l.input) {
-				return token{Type: tokenError, Value: "unterminated string escape", Line: line, Column: col}
+				return token{Type: tokenError, Value: "unterminated string escape", Line: line, Column: col, Offset: offset}
 			}
 			escaped := l.current()
 			switch escaped {
@@ -267,7 +282,7 @@ func (l *lexer) scanString(quote rune, line, col int) token {
 				// Unicode escape: \uXXXX
 				l.advance()
 				if l.pos+4 > len(l.input) {
-					return token{Type: tokenError, Value: "invalid unicode escape", Line: line, Column: col}
+					return token{Type: tokenError, Value: "invalid unicode escape", Line: line, Column: col, Offset: offset}
 				}
 				hex := l.input[l.pos : l.pos+4]
 				var r rune
@@ -281,7 +296,7 @@ func (l *lexer) scanString(quote rune, line, col int) token {
 					case c >= 'A' && c <= 'F':
 						r += c - 'A' + 10
 					default:
-						return token{Type: tokenError, Value: "invalid unicode escape", Line: line, Column: col}
+						return token{Type: tokenError, Value: "invalid unicode escape", Line: line, Column: col, Offset: offset}
 					}
 				}
 				result = append(result, string(r)...)
@@ -297,7 +312,7 @@ func (l *lexer) scanString(quote rune, line, col int) token {
 		}
 
 		if ch == '\n' && quote != '`' {
-			return token{Type: tokenError, Value: "unterminated string", Line: line, Column: col}
+			return token{Type: tokenError, Value: "unterminated string", Line: line, Column: col, Offset: offset}
 		}
 
 		if result != nil {
@@ -306,10 +321,10 @@ func (l *lexer) scanString(quote rune, line, col int) token {
 		l.advance()
 	}
 
-	return token{Type: tokenError, Value: "unterminated string", Line: line, Column: col}
+	return token{Type: tokenError, Value: "unterminated string", Line: line, Column: col, Offset: offset}
 }
 
-func (l *lexer) scanOperator(line, col int) token {
+func (l *lexer) scanOperator(line, col, offset int) token {
 	ch := l.current()
 	l.advance()
 
@@ -317,149 +332,163 @@ func (l *lexer) scanOperator(line, col int) token {
 	case '+':
 		if l.current() == '+' {
 			l.advance()
-			return token{Type: tokenPlusPlus, Line: line, Column: col}
+			return token{Type: tokenPlusPlus, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenPlus, Line: line, Column: col}
+		return token{Type: tokenPlus, Line: line, Column: col, Offset: offset}
 
 	case '-':
 		if l.current() == '-' {
 			l.advance()
-			return token{Type: tokenMinMin, Line: line, Column: col}
+			return token{Type: tokenMinMin, Line: line, Column: col, Offset: offset}
 		}
 		if l.current() == '>' {
 			l.advance()
-			return token{Type: tokenArrow, Line: line, Column: col}
+			return token{Type: tokenArrow, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenMinus, Line: line, Column: col}
+		return token{Type: tokenMinus, Line: line, Column: col, Offset: offset}
 
 	case '*':
 		if l.current() == '*' {
 			l.advance()
-			return token{Type: tokenPower, Line: line, Column: col}
+			return token{Type: tokenPower, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenStar, Line: line, Column: col}
+		return token{Type: tokenStar, Line: line, Column: col, Offset: offset}
 
 	case '/':
-		return token{Type: tokenSlash, Line: line, Column: col}
+		return token{Type: tokenSlash, Line: line, Column: col, Offset: offset}
 
 	case '%':
-		return token{Type: tokenPercent, Line: line, Column: col}
+		return token{Type: tokenPercent, Line: line, Column: col, Offset: offset}
 
 	case '=':
 		if l.current() == '=' {
 			l.advance()
-			return token{Type: tokenEQ, Line: line, Column: col}
+			return token{Type: tokenEQ, Line: line, Column: col, Offset: offset}
 		}
 		if l.current() == '>' {
 			l.advance()
-			return token{Type: tokenFatArrow, Line: line, Column: col}
+			return token{Type: tokenFatArrow, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenAssign, Line: line, Column: col}
+		return token{Type: tokenAssign, Line: line, Column: col, Offset: offset}
 
 	case '!':
 		if l.current() == '=' {
 			l.advance()
-			return token{Type: tokenNE, Line: line, Column: col}
+			return token{Type: tokenNE, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenBang, Line: line, Column: col}
+		return token{Type: tokenBang, Line: line, Column: col, Offset: offset}
 
 	case '<':
 		if l.current() == '=' {
 			l.advance()
-			return token{Type: tokenLE, Line: line, Column: col}
+			return token{Type: tokenLE, Line: line, Column: col, Offset: offset}
 		}
 		if l.current() == '<' {
 			l.advance()
-			return token{Type: tokenShiftL, Line: line, Column: col}
+			return token{Type: tokenShiftL, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenLT, Line: line, Column: col}
+		return token{Type: tokenLT, Line: line, Column: col, Offset: offset}
 
 	case '>':
 		if l.current() == '=' {
 			l.advance()
-			return token{Type: tokenGE, Line: line, Column: col}
+			return token{Type: tokenGE, Line: line, Column: col, Offset: offset}
 		}
 		if l.current() == '>' {
 			l.advance()
 			if l.current() == '>' {
 				l.advance()
-				return token{Type: tokenShiftRU, Line: line, Column: col}
+				return token{Type: tokenShiftRU, Line: line, Column: col, Offset: offset}
 			}
-			return token{Type: tokenShiftR, Line: line, Column: col}
+			return token{Type: tokenShiftR, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenGT, Line: line, Column: col}
+		return token{Type: tokenGT, Line: line, Column: col, Offset: offset}
 
 	case '&':
 		if l.current() == '&' {
 			l.advance()
-			return token{Type: tokenAmpAmp, Line: line, Column: col}
+			return token{Type: tokenAmpAmp, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenAmp, Line: line, Column: col}
+		return token{Type: tokenAmp, Line: line, Column: col, Offset: offset}
 
 	case '|':
 		if l.current() == '|' {
 			l.advance()
-			return token{Type: tokenPipePipe, Line: line, Column: col}
+			return token{Type: tokenPipePipe, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenPipe, Line: line, Column: col}
+		return token{Type: tokenPipe, Line: line, Column: col, Offset: offset}
 
 	case '^':
-		return token{Type: tokenCaret, Line: line, Column: col}
+		return token{Type: tokenCaret, Line: line, Column: col, Offset: offset}
 
 	case '~':
 		if l.current() == '=' {
 			l.advance()
-			return token{Type: tokenLike, Line: line, Column: col}
+			return token{Type: tokenLike, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenTilde, Line: line, Column: col}
+		return token{Type: tokenTilde, Line: line, Column: col, Offset: offset}
 
 	case '?':
 		if l.current() == '?' {
 			l.advance()
-			return token{Type: tokenCoalesce, Line: line, Column: col}
+			return token{Type: tokenCoalesce, Line: line, Column: col, Offset: offset}
 		}
 		if l.current() == '.' {
 			l.advance()
 			if l.current() == '[' {
 				l.advance()
-				return token{Type: tokenOptIndex, Line: line, Column: col}
+				return token{Type: tokenOptIndex, Line: line, Column: col, Offset: offset}
 			}
-			return token{Type: tokenOptChain, Line: line, Column: col}
+			return token{Type: tokenOptChain, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenQuestion, Line: line, Column: col}
+		return token{Type: tokenQuestion, Line: line, Column: col, Offset: offset}
 
 	case '.':
 		if l.current() == '.' {
 			l.advance()
 			if l.current() == '.' {
 				l.advance()
-				return token{Type: tokenSpread, Line: line, Column: col}
+				return token{Type: tokenSpread, Line: line, Column: col, Offset: offset}
 			}
-			return token{Type: tokenRange, Line: line, Column: col}
+			return token{Type: tokenRange, Line: line, Column: col, Offset: offset}
 		}
-		return token{Type: tokenDot, Line: line, Column: col}
+		return token{Type: tokenDot, Line: line, Column: col, Offset: offset}
 
 	case '(':
-		return token{Type: tokenLParen, Line: line, Column: col}
+		return token{Type: tokenLParen, Line: line, Column: col, Offset: offset}
 	case ')':
-		return token{Type: tokenRParen, Line: line, Column: col}
+		return token{Type: tokenRParen, Line: line, Column: col, Offset: offset}
 	case '[':
-		return token{Type: tokenLBracket, Line: line, Column: col}
+		return token{Type: tokenLBracket, Line: line, Column: col, Offset: offset}
 	case ']':
-		return token{Type: tokenRBracket, Line: line, Column: col}
+		return token{Type: tokenRBracket, Line: line, Column: col, Offset: offset}
 	case '{':
-		return token{Type: tokenLCurly, Line: line, Column: col}
+		return token{Type: tokenLCurly, Line: line, Column: col, Offset: offset}
 	case '}':
-		return token{Type: tokenRCurly, Line: line, Column: col}
+		return token{Type: tokenRCurly, Line: line, Column: col, Offset: offset}
 	case ',':
-		return token{Type: tokenComma, Line: line, Column: col}
+		return token{Type: tokenComma, Line: line, Column: col, Offset: offset}
 	case ':':
-		return token{Type: tokenColon, Line: line, Column: col}
+		return token{Type: tokenColon, Line: line, Column: col, Offset: offset}
 	case ';':
-		return token{Type: tokenSemi, Line: line, Column: col}
+		return token{Type: tokenSemi, Line: line, Column: col, Offset: offset}
 	}
 
-	return token{Type: tokenError, Value: "unexpected character: " + string(ch), Line: line, Column: col}
+	return token{Type: tokenError, Value: "unexpected character: " + string(ch), Line: line, Column: col, Offset: offset}
+}
+
+func (l *lexer) scanLineComment(line, col, offset int) token {
+	start := l.pos
+	l.skipLineComment()
+	return token{Type: tokenComment, Value: l.input[start:l.pos], Line: line, Column: col, Offset: offset}
+}
+
+func (l *lexer) scanBlockComment(line, col, offset int) (token, error) {
+	start := l.pos
+	if err := l.skipBlockComment(); err != nil {
+		return token{}, err
+	}
+	return token{Type: tokenComment, Value: l.input[start:l.pos], Line: line, Column: col, Offset: offset}, nil
 }
 
 func (l *lexer) skipWhitespace() {

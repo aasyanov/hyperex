@@ -8,6 +8,7 @@ type token struct {
 	Value  string
 	Line   int
 	Column int
+	Offset int // 0-based byte offset into the source
 }
 
 // String returns a human-readable representation of the token.
@@ -98,7 +99,9 @@ const (
 	tokenElse
 	tokenTrue
 	tokenFalse
-	tokenNull
+
+	// comment (emitted only when lexer.emitComments is set; skipped for parse)
+	tokenComment
 )
 
 var tokenNames = map[tokenType]string{
@@ -163,7 +166,7 @@ var tokenNames = map[tokenType]string{
 	tokenElse:     kwElse,
 	tokenTrue:     litTrue,
 	tokenFalse:    litFalse,
-	tokenNull:     litNull,
+	tokenComment:  "Comment",
 }
 
 func (t tokenType) String() string {
@@ -178,14 +181,13 @@ var keywords = map[string]tokenType{
 	litTrue:  tokenTrue,
 	litFalse: tokenFalse,
 	litNil:   tokenNil,
-	litNull:  tokenNull,
-	"in":    tokenIn,
-	kwNot:   tokenNot,
-	kwAnd:   tokenAnd,
-	"or":    tokenOr,
-	kwLet:   tokenLet,
-	"if":    tokenIf,
-	kwElse:  tokenElse,
+	"in":     tokenIn,
+	kwNot:    tokenNot,
+	kwAnd:    tokenAnd,
+	"or":     tokenOr,
+	kwLet:    tokenLet,
+	"if":     tokenIf,
+	kwElse:   tokenElse,
 }
 
 // Precedence returns the operator precedence for the given token.

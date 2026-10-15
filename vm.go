@@ -13,7 +13,18 @@ import (
 	"time"
 )
 
+const (
+	sandboxCheckMask         = 1023 // ops/memory cadence: i&sandboxCheckMask
+	sandboxOpsBatch          = 1024 // opsCount increment per cadence check
+	defaultVMStackCap        = 256
+	envClearRebuildThreshold = 32
+	maxBitShift              = 63
+	vmValueBaseBytes         = 32 // approximate sizeof(Value) for memory estimates
+)
+
 // vm executes compiled bytecode.
+// Field order packs ints/pointers first; strictMode bool last to avoid mid-struct pad
+// before numericMode/nonFiniteMode (amd64 Sizeof still 144 with trailing align).
 type execVM struct {
 	code      *bytecode
 	stack     []Value
@@ -29,25 +40,31 @@ type execVM struct {
 	limits   *sandboxLimits
 	opsCount int64
 
-	// Strict mode - error on invalid type conversions
-	strictMode bool
+	// Numeric arithmetic policy (NumericDefault / NumericFloat64)
+	numericMode NumericMode
+
+	// Non-finite float policy (NonFiniteAllow / NonFiniteError)
+	nonFiniteMode NonFiniteMode
 
 	// ctx is set only for the duration of Run / nested execute; cleared on releaseVM.
 	ctx context.Context
+
+	// Strict mode - error on invalid type conversions
+	strictMode bool
 }
 
 // sandboxLoopCheck makes long-running in-vm or builtin loops interruptible by
 // sandbox limits and context cancellation.
-// It is intentionally cheap: checks every 1024 iterations and accounts approximate ops cost.
+// It is intentionally cheap: checks every sandboxOpsBatch iterations and accounts approximate ops cost.
 func (vm *execVM) sandboxLoopCheck(i int) error {
 	if vm == nil {
 		return nil
 	}
-	if (i & 1023) != 0 {
+	if (i & sandboxCheckMask) != 0 {
 		return nil
 	}
 	if vm.limits != nil {
-		vm.opsCount += 1024
+		vm.opsCount += sandboxOpsBatch
 	}
 	return vm.checkLimits()
 }
@@ -62,9 +79,9 @@ func sandboxDeny(msg string) error {
 var vmPool = sync.Pool{
 	New: func() any {
 		return &execVM{
-			stack:    make([]Value, 256),
+			stack:    make([]Value, defaultVMStackCap),
 			env:      make(map[string]Value),
-			maxDepth: 1000,
+			maxDepth: defaultMaxCallDepth,
 		}
 	},
 }
@@ -146,14 +163,16 @@ func newVM(code *bytecode, builtins map[string]Value) *execVM {
 	vm.ip = 0
 	vm.callDepth = 0
 	// Reset pooled configuration to safe defaults. Specific callers may override (engine/sandbox).
-	vm.maxDepth = 1000
+	vm.maxDepth = defaultMaxCallDepth
 	vm.builtins = builtins
 	vm.limits = nil
 	vm.opsCount = 0
 	vm.ctx = nil
 	vm.strictMode = false
+	vm.numericMode = NumericDefault
+	vm.nonFiniteMode = NonFiniteAllow
 	// Clear env - use new map if current is too large to avoid O(n) delete loop
-	if len(vm.env) > 32 {
+	if len(vm.env) > envClearRebuildThreshold {
 		vm.env = make(map[string]Value)
 	} else {
 		for k := range vm.env {
@@ -181,6 +200,8 @@ func releaseVM(vm *execVM) {
 	vm.builtins = nil
 	vm.limits = nil
 	vm.strictMode = false
+	vm.numericMode = NumericDefault
+	vm.nonFiniteMode = NonFiniteAllow
 	vm.ctx = nil
 	// Clear stack to release references to large objects (prevent memory leak)
 	// Use maxSP because sp at the end can be 0 even if large temporaries were pushed/popped.
@@ -190,7 +211,7 @@ func releaseVM(vm *execVM) {
 	vm.sp = 0
 	vm.maxSP = 0
 	// Clear env to release references - use new map if too large
-	if len(vm.env) > 32 {
+	if len(vm.env) > envClearRebuildThreshold {
 		vm.env = make(map[string]Value)
 	} else {
 		for k := range vm.env {
@@ -233,7 +254,8 @@ func (vm *execVM) run(ctx context.Context, env map[string]any) (Value, error) {
 const sandboxMaxEnvDepth = 32
 
 // sandboxCoerceEnvValue converts environment values into a safe subset for Secure sandbox:
-// nil/bool/number/string/[]any/map[string]any (recursively), rejecting structs, pointers, funcs, etc.
+// nil/bool/number/string/time.Time/time.Duration/[]any/map[string]any (recursively),
+// rejecting other structs, pointers, funcs, etc.
 func (vm *execVM) sandboxCoerceEnvValue(v any, depth int) (Value, error) {
 	if depth > sandboxMaxEnvDepth {
 		return Nil, sandboxDeny("environment value too deeply nested")
@@ -250,6 +272,20 @@ func (vm *execVM) sandboxCoerceEnvValue(v any, depth int) (Value, error) {
 		return x, nil
 	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, string:
 		return NewValue(x), nil
+	case time.Time:
+		return Time(x), nil
+	case time.Duration:
+		return Duration(x), nil
+	case *time.Time:
+		if x == nil {
+			return Nil, nil
+		}
+		return Time(*x), nil
+	case *time.Duration:
+		if x == nil {
+			return Nil, nil
+		}
+		return Duration(*x), nil
 	case []any:
 		out := make([]any, len(x))
 		for i, elem := range x {
@@ -259,7 +295,7 @@ func (vm *execVM) sandboxCoerceEnvValue(v any, depth int) (Value, error) {
 			}
 			out[i] = ev.Interface()
 			// Best-effort: periodically honor timeout/ops in long env conversions
-			if vm.limits != nil && (i&1023) == 0 {
+			if vm.limits != nil && (i&sandboxCheckMask) == 0 {
 				if err := vm.checkLimits(); err != nil {
 					return Nil, err
 				}
@@ -276,7 +312,7 @@ func (vm *execVM) sandboxCoerceEnvValue(v any, depth int) (Value, error) {
 			}
 			out[k] = ev.Interface()
 			i++
-			if vm.limits != nil && (i&1023) == 0 {
+			if vm.limits != nil && (i&sandboxCheckMask) == 0 {
 				if err := vm.checkLimits(); err != nil {
 					return Nil, err
 				}
@@ -296,7 +332,7 @@ func (vm *execVM) sandboxCoerceEnvValue(v any, depth int) (Value, error) {
 					return Nil, err
 				}
 				out[i] = ev.Interface()
-				if vm.limits != nil && (i&1023) == 0 {
+				if vm.limits != nil && (i&sandboxCheckMask) == 0 {
 					if err := vm.checkLimits(); err != nil {
 						return Nil, err
 					}
@@ -318,7 +354,7 @@ func (vm *execVM) sandboxCoerceEnvValue(v any, depth int) (Value, error) {
 				}
 				out[k] = ev.Interface()
 				i++
-				if vm.limits != nil && (i&1023) == 0 {
+				if vm.limits != nil && (i&sandboxCheckMask) == 0 {
 					if err := vm.checkLimits(); err != nil {
 						return Nil, err
 					}
@@ -336,12 +372,12 @@ func (vm *execVM) execute() (Value, error) {
 	constants := vm.code.Constants
 
 	for vm.ip < len(code) {
-		// Sandbox limits: every op. Context-only: every 1024 ops (same cadence as sandboxLoopCheck).
+		// Sandbox limits: every op. Context-only: every sandboxOpsBatch ops (same cadence as sandboxLoopCheck).
 		if vm.limits != nil {
 			if err := vm.checkLimits(); err != nil {
 				return Nil, err
 			}
-		} else if vm.ctx != nil && (vm.opsCount&1023) == 0 {
+		} else if vm.ctx != nil && (vm.opsCount&sandboxCheckMask) == 0 {
 			if err := vm.checkContext(); err != nil {
 				return Nil, err
 			}
@@ -479,34 +515,19 @@ func (vm *execVM) execute() (Value, error) {
 		case opPow:
 			right := vm.pop()
 			left := vm.pop()
-			// For integer operands with non-negative exponent, try to compute integer result
-			if left.IsInt() && right.IsInt() && right.Int() >= 0 {
-				base := left.Int()
-				exp := right.Int()
-				// Check if result will overflow before computing
-				if canIntPowWithoutOverflow(base, exp) {
-					result := intPow(base, exp)
-					vm.push(Int(result))
-				} else {
-					vm.push(Float(math.Pow(float64(base), float64(exp))))
-				}
-			} else {
-				vm.push(Float(math.Pow(left.Float(), right.Float())))
+			powVal, powErr := vm.pow(left, right)
+			if powErr != nil {
+				return Nil, powErr
 			}
+			vm.push(powVal)
 
 		case opNeg:
 			v := vm.pop()
-			if v.IsInt() {
-				n := v.Int()
-				// Handle MinInt64: -MinInt64 overflows in two's complement
-				if n == math.MinInt64 {
-					vm.push(Float(-float64(n)))
-				} else {
-					vm.push(Int(-n))
-				}
-			} else {
-				vm.push(Float(-v.Float()))
+			negVal, negErr := vm.neg(v)
+			if negErr != nil {
+				return Nil, negErr
 			}
+			vm.push(negVal)
 
 		case opEq:
 			right := vm.pop()
@@ -578,7 +599,7 @@ func (vm *execVM) execute() (Value, error) {
 			if shift < 0 {
 				return Nil, &RuntimeError{Message: errNegativeShift}
 			}
-			if shift > 63 {
+			if shift > maxBitShift {
 				vm.push(Int(0)) // Shifting by 64+ bits results in 0
 			} else {
 				vm.push(Int(left.Int() << uint(shift)))
@@ -591,7 +612,7 @@ func (vm *execVM) execute() (Value, error) {
 			if shift < 0 {
 				return Nil, &RuntimeError{Message: errNegativeShift}
 			}
-			if shift > 63 {
+			if shift > maxBitShift {
 				// For right shift, result depends on sign
 				if left.Int() < 0 {
 					vm.push(Int(-1)) // All 1s for negative numbers
@@ -610,7 +631,7 @@ func (vm *execVM) execute() (Value, error) {
 			if shift < 0 {
 				return Nil, &RuntimeError{Message: errNegativeShift}
 			}
-			if shift > 63 {
+			if shift > maxBitShift {
 				vm.push(Int(0)) // Always 0 for unsigned shift >= 64
 			} else {
 				// Cast to uint64 for unsigned shift, then back to int64
@@ -809,13 +830,15 @@ func (vm *execVM) execute() (Value, error) {
 			}
 			// Create a closure value with captured environment, builtins and sandbox limits
 			vm.push(Value{kind: kindFunc, ptr: &closure{
-				code:       lambdaCode,
-				env:        vm.copyEnv(),
-				params:     lambdaCode.Params,
-				builtins:   vm.builtins,   // Capture builtins including custom functions
-				limits:     vm.limits,     // Inherit sandbox limits
-				maxDepth:   vm.maxDepth,   // Inherit max call depth from parent vm
-				strictMode: vm.strictMode, // Inherit strict mode from parent vm
+				code:          lambdaCode,
+				env:           vm.copyEnv(),
+				params:        lambdaCode.Params,
+				builtins:      vm.builtins,      // Capture builtins including custom functions
+				limits:        vm.limits,        // Inherit sandbox limits
+				maxDepth:      vm.maxDepth,      // Inherit max call depth from parent vm
+				strictMode:    vm.strictMode,    // Inherit strict mode from parent vm
+				numericMode:   vm.numericMode,   // Inherit numeric policy
+				nonFiniteMode: vm.nonFiniteMode, // Inherit non-finite policy
 			}})
 
 		case opSpread:
@@ -956,8 +979,32 @@ func parseFloat(s string) (float64, error) {
 	return strconv.ParseFloat(s, 64)
 }
 
+// floatResult wraps a float64 and optionally rejects NaN/Inf under NonFiniteError.
+func (vm *execVM) floatResult(f float64) (Value, error) {
+	if vm.nonFiniteMode == NonFiniteError && (math.IsNaN(f) || math.IsInf(f, 0)) {
+		return Nil, wrapRuntime(ErrNonFinite)
+	}
+	return Float(f), nil
+}
+
+// rejectNonFinite returns ErrNonFinite when mode is NonFiniteError and v is NaN/Inf float.
+func (vm *execVM) rejectNonFinite(v Value) error {
+	if vm == nil || vm.nonFiniteMode != NonFiniteError || !v.IsFloat() {
+		return nil
+	}
+	f := v.Float()
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return wrapRuntime(ErrNonFinite)
+	}
+	return nil
+}
+
 // Arithmetic helpers
 func (vm *execVM) add(left, right Value) (Value, error) {
+	// Temporal arithmetic before string concat (no silent string+time).
+	if left.IsTime() || right.IsTime() || left.IsDuration() || right.IsDuration() {
+		return vm.addTemporal(left, right)
+	}
 	// Strict mode: check for invalid string-to-number conversions
 	if vm.strictMode && !left.IsString() && !right.IsString() {
 		if err := vm.strictCheckNumeric(left); err != nil {
@@ -970,16 +1017,19 @@ func (vm *execVM) add(left, right Value) (Value, error) {
 	if left.IsString() || right.IsString() {
 		return String(left.String() + right.String()), nil
 	}
+	if vm.numericMode == NumericFloat64 && left.IsNumber() && right.IsNumber() {
+		return vm.floatResult(left.Float() + right.Float())
+	}
 	if left.IsInt() && right.IsInt() {
 		a, b := left.Int(), right.Int()
 		if addOverflows(a, b) {
 			// Overflow - use float arithmetic instead
-			return Float(float64(a) + float64(b)), nil
+			return vm.floatResult(float64(a) + float64(b))
 		}
 		return Int(a + b), nil
 	}
 	if left.IsNumber() && right.IsNumber() {
-		return Float(left.Float() + right.Float()), nil
+		return vm.floatResult(left.Float() + right.Float())
 	}
 	if left.IsArray() && right.IsArray() {
 		arr := append(left.Array(), right.Array()...)
@@ -988,7 +1038,38 @@ func (vm *execVM) add(left, right Value) (Value, error) {
 	return Nil, &RuntimeError{Op: "+", Message: fmt.Sprintf("cannot add %s and %s", left.Type(), right.Type())}
 }
 
+func (vm *execVM) addTemporal(left, right Value) (Value, error) {
+	switch {
+	case left.IsTime() && right.IsDuration():
+		return addTimeDuration(left, right)
+	case left.IsDuration() && right.IsTime():
+		return addTimeDuration(right, left)
+	case left.IsDuration() && right.IsDuration():
+		a, b := int64(left.bits), int64(right.bits)
+		if addOverflows(a, b) {
+			return Nil, &RuntimeError{Op: "+", Message: errDurationAddOverflow}
+		}
+		return Duration(time.Duration(a + b)), nil
+	case left.IsTime() && right.IsTime():
+		return Nil, &RuntimeError{Op: "+", Message: "cannot add time and time"}
+	default:
+		// string+time / time+number / etc.
+		return Nil, &RuntimeError{Op: "+", Message: fmt.Sprintf("cannot add %s and %s", left.Type(), right.Type())}
+	}
+}
+
+func addTimeDuration(t, d Value) (Value, error) {
+	a, b := int64(t.bits), int64(d.bits)
+	if addOverflows(a, b) {
+		return Nil, &RuntimeError{Op: "+", Message: errTimeDurationOverflow}
+	}
+	return Time(time.Unix(0, a+b).UTC()), nil
+}
+
 func (vm *execVM) sub(left, right Value) (Value, error) {
+	if left.IsTime() || right.IsTime() || left.IsDuration() || right.IsDuration() {
+		return vm.subTemporal(left, right)
+	}
 	// Strict mode: check for invalid string-to-number conversions
 	if vm.strictMode {
 		if err := vm.strictCheckNumeric(left); err != nil {
@@ -998,21 +1079,52 @@ func (vm *execVM) sub(left, right Value) (Value, error) {
 			return Nil, err
 		}
 	}
+	if vm.numericMode == NumericFloat64 && left.IsNumber() && right.IsNumber() {
+		return vm.floatResult(left.Float() - right.Float())
+	}
 	if left.IsInt() && right.IsInt() {
 		a, b := left.Int(), right.Int()
 		if subOverflows(a, b) {
 			// Overflow - use float arithmetic instead
-			return Float(float64(a) - float64(b)), nil
+			return vm.floatResult(float64(a) - float64(b))
 		}
 		return Int(a - b), nil
 	}
 	if left.IsNumber() && right.IsNumber() {
-		return Float(left.Float() - right.Float()), nil
+		return vm.floatResult(left.Float() - right.Float())
 	}
 	return Nil, &RuntimeError{Op: "-", Message: fmt.Sprintf("cannot subtract %s from %s", right.Type(), left.Type())}
 }
 
+func (vm *execVM) subTemporal(left, right Value) (Value, error) {
+	switch {
+	case left.IsTime() && right.IsDuration():
+		a, b := int64(left.bits), int64(right.bits)
+		if subOverflows(a, b) {
+			return Nil, &RuntimeError{Op: "-", Message: errTimeSubDurationOverflow}
+		}
+		return Time(time.Unix(0, a-b).UTC()), nil
+	case left.IsTime() && right.IsTime():
+		a, b := int64(left.bits), int64(right.bits)
+		if subOverflows(a, b) {
+			return Nil, &RuntimeError{Op: "-", Message: "time - time overflow"}
+		}
+		return Duration(time.Duration(a - b)), nil
+	case left.IsDuration() && right.IsDuration():
+		a, b := int64(left.bits), int64(right.bits)
+		if subOverflows(a, b) {
+			return Nil, &RuntimeError{Op: "-", Message: errDurationSubOverflow}
+		}
+		return Duration(time.Duration(a - b)), nil
+	default:
+		return Nil, &RuntimeError{Op: "-", Message: fmt.Sprintf("cannot subtract %s from %s", right.Type(), left.Type())}
+	}
+}
+
 func (vm *execVM) mul(left, right Value) (Value, error) {
+	if left.IsDuration() || right.IsDuration() {
+		return mulDuration(left, right)
+	}
 	// Strict mode: check for invalid string-to-number conversions
 	if vm.strictMode {
 		// Only check if not doing string repetition
@@ -1025,16 +1137,19 @@ func (vm *execVM) mul(left, right Value) (Value, error) {
 			}
 		}
 	}
+	if vm.numericMode == NumericFloat64 && left.IsNumber() && right.IsNumber() {
+		return vm.floatResult(left.Float() * right.Float())
+	}
 	if left.IsInt() && right.IsInt() {
 		a, b := left.Int(), right.Int()
 		if mulOverflows(a, b) {
 			// Overflow - use float arithmetic instead
-			return Float(float64(a) * float64(b)), nil
+			return vm.floatResult(float64(a) * float64(b))
 		}
 		return Int(a * b), nil
 	}
 	if left.IsNumber() && right.IsNumber() {
-		return Float(left.Float() * right.Float()), nil
+		return vm.floatResult(left.Float() * right.Float())
 	}
 	// String repetition - O(n) using strings.Repeat
 	if left.IsString() && right.IsInt() {
@@ -1062,7 +1177,40 @@ func (vm *execVM) mul(left, right Value) (Value, error) {
 	return Nil, &RuntimeError{Op: "*", Message: fmt.Sprintf("cannot multiply %s and %s", left.Type(), right.Type())}
 }
 
+func mulDuration(left, right Value) (Value, error) {
+	var d Value
+	var n Value
+	switch {
+	case left.IsDuration() && right.IsNumber():
+		d, n = left, right
+	case left.IsNumber() && right.IsDuration():
+		d, n = right, left
+	default:
+		return Nil, &RuntimeError{Op: "*", Message: fmt.Sprintf("cannot multiply %s and %s", left.Type(), right.Type())}
+	}
+	a := int64(d.bits)
+	if n.IsInt() {
+		b := n.Int()
+		if mulOverflows(a, b) {
+			return Nil, &RuntimeError{Op: "*", Message: errDurationMulOverflow}
+		}
+		return Duration(time.Duration(a * b)), nil
+	}
+	product := float64(a) * n.Float()
+	if math.IsNaN(product) || math.IsInf(product, 0) {
+		return Nil, &RuntimeError{Op: "*", Message: errDurationMulOverflow}
+	}
+	const maxInt64Plus1 = 9223372036854775808.0
+	if product < float64(math.MinInt64) || product >= maxInt64Plus1 {
+		return Nil, &RuntimeError{Op: "*", Message: errDurationMulOverflow}
+	}
+	return Duration(time.Duration(int64(product))), nil
+}
+
 func (vm *execVM) div(left, right Value) (Value, error) {
+	if left.IsDuration() {
+		return divDuration(left, right)
+	}
 	// Strict mode: check for invalid string-to-number conversions
 	if vm.strictMode {
 		if err := vm.strictCheckNumeric(left); err != nil {
@@ -1075,10 +1223,39 @@ func (vm *execVM) div(left, right Value) (Value, error) {
 	if right.Float() == 0 {
 		return Nil, ErrDivisionByZero
 	}
+	if vm.numericMode == NumericFloat64 && left.IsNumber() && right.IsNumber() {
+		return vm.floatResult(left.Float() / right.Float())
+	}
 	if left.IsInt() && right.IsInt() {
 		return Int(left.Int() / right.Int()), nil
 	}
-	return Float(left.Float() / right.Float()), nil
+	return vm.floatResult(left.Float() / right.Float())
+}
+
+func divDuration(left, right Value) (Value, error) {
+	if !left.IsDuration() || !right.IsNumber() {
+		return Nil, &RuntimeError{Op: "/", Message: fmt.Sprintf("cannot divide %s by %s", left.Type(), right.Type())}
+	}
+	if right.Float() == 0 {
+		return Nil, ErrDivisionByZero
+	}
+	a := int64(left.bits)
+	if right.IsInt() {
+		b := right.Int()
+		if b == 0 {
+			return Nil, ErrDivisionByZero
+		}
+		return Duration(time.Duration(a / b)), nil
+	}
+	quot := float64(a) / right.Float()
+	if math.IsNaN(quot) || math.IsInf(quot, 0) {
+		return Nil, &RuntimeError{Op: "/", Message: errDurationDivOverflow}
+	}
+	const maxInt64Plus1 = 9223372036854775808.0
+	if quot < float64(math.MinInt64) || quot >= maxInt64Plus1 {
+		return Nil, &RuntimeError{Op: "/", Message: errDurationDivOverflow}
+	}
+	return Duration(time.Duration(int64(quot))), nil
 }
 
 func (vm *execVM) mod(left, right Value) (Value, error) {
@@ -1090,6 +1267,13 @@ func (vm *execVM) mod(left, right Value) (Value, error) {
 		if err := vm.strictCheckNumeric(right); err != nil {
 			return Nil, err
 		}
+	}
+	if vm.numericMode == NumericFloat64 && left.IsNumber() && right.IsNumber() {
+		r := right.Float()
+		if r == 0 {
+			return Nil, ErrDivisionByZero
+		}
+		return vm.floatResult(math.Mod(left.Float(), r))
 	}
 	// Support both integer and float modulo
 	if left.IsInt() && right.IsInt() {
@@ -1104,7 +1288,48 @@ func (vm *execVM) mod(left, right Value) (Value, error) {
 	if r == 0 {
 		return Nil, ErrDivisionByZero
 	}
-	return Float(math.Mod(left.Float(), r)), nil
+	return vm.floatResult(math.Mod(left.Float(), r))
+}
+
+func (vm *execVM) pow(left, right Value) (Value, error) {
+	if vm.numericMode == NumericFloat64 {
+		return vm.floatResult(math.Pow(left.Float(), right.Float()))
+	}
+	// For integer operands with non-negative exponent, try to compute integer result
+	if left.IsInt() && right.IsInt() && right.Int() >= 0 {
+		base := left.Int()
+		exp := right.Int()
+		if canIntPowWithoutOverflow(base, exp) {
+			return Int(intPow(base, exp)), nil
+		}
+		return vm.floatResult(math.Pow(float64(base), float64(exp)))
+	}
+	return vm.floatResult(math.Pow(left.Float(), right.Float()))
+}
+
+func (vm *execVM) neg(v Value) (Value, error) {
+	if v.IsDuration() {
+		n := int64(v.bits)
+		if n == math.MinInt64 {
+			return Nil, &RuntimeError{Op: "-", Message: errDurationNegOverflow}
+		}
+		return Duration(time.Duration(-n)), nil
+	}
+	if v.IsTime() {
+		return Nil, &RuntimeError{Op: "-", Message: "cannot negate time"}
+	}
+	if vm.numericMode == NumericFloat64 && v.IsNumber() {
+		return vm.floatResult(-v.Float())
+	}
+	if v.IsInt() {
+		n := v.Int()
+		// Handle MinInt64: -MinInt64 overflows in two's complement
+		if n == math.MinInt64 {
+			return vm.floatResult(-float64(n))
+		}
+		return Int(-n), nil
+	}
+	return vm.floatResult(-v.Float())
 }
 
 func (vm *execVM) contains(collection, item Value) (bool, error) {
@@ -1131,7 +1356,7 @@ func (vm *execVM) contains(collection, item Value) (bool, error) {
 			return true, nil
 		}
 		return len(collection.String()) >= len(itemStr) &&
-			containsString(collection.String(), itemStr), nil
+			strings.Contains(collection.String(), itemStr), nil
 	default:
 		// Handle kindAny (native Go slices and maps) via reflection
 		if vm.limits != nil && vm.limits.secure {
@@ -1179,10 +1404,6 @@ func (vm *execVM) contains(collection, item Value) (bool, error) {
 		}
 		return false, nil
 	}
-}
-
-func containsString(s, substr string) bool {
-	return strings.Contains(s, substr)
 }
 
 func (vm *execVM) index(obj, index Value) (Value, error) {
@@ -1593,7 +1814,14 @@ func (vm *execVM) call(fn Value, args []Value) (Value, error) {
 					return Nil, err
 				}
 			}
-			return bf.fn(vm, args)
+			out, err := bf.fn(vm, args)
+			if err != nil {
+				return Nil, err
+			}
+			if err := vm.rejectNonFinite(out); err != nil {
+				return Nil, err
+			}
+			return out, nil
 		}
 
 		// Sandbox: disallow calling native Go funcs that are not "named" builtins.
@@ -1604,7 +1832,14 @@ func (vm *execVM) call(fn Value, args []Value) (Value, error) {
 		}
 
 		// Native Go function
-		return vm.callNative(fn.ptr, args)
+		out, err := vm.callNative(fn.ptr, args)
+		if err != nil {
+			return Nil, err
+		}
+		if err := vm.rejectNonFinite(out); err != nil {
+			return Nil, err
+		}
+		return out, nil
 	default:
 		return Nil, ErrNotCallable
 	}
@@ -1629,8 +1864,10 @@ func (vm *execVM) callClosure(closure *closure, args []Value) (Value, error) {
 		innerVM.maxDepth = vm.maxDepth
 		innerVM.callDepth = vm.callDepth
 	}
-	// Inherit strict mode and context from parent vm
+	// Inherit strict mode, numeric/non-finite policy, and context from parent vm
 	innerVM.strictMode = vm.strictMode
+	innerVM.numericMode = vm.numericMode
+	innerVM.nonFiniteMode = vm.nonFiniteMode
 	innerVM.ctx = vm.ctx
 	defer func() {
 		// Propagate ops count back to parent vm
@@ -1821,13 +2058,15 @@ func (vm *execVM) copyEnv() map[string]Value {
 
 // closure represents a lambda/closure value.
 type closure struct {
-	code       *bytecode
-	env        map[string]Value
-	params     []string         // Parameter names for binding
-	builtins   map[string]Value // Builtins available to closure (includes custom functions)
-	limits     *sandboxLimits   // Sandbox limits inherited from parent vm
-	maxDepth   int              // Max call depth inherited from parent vm
-	strictMode bool             // Strict mode flag inherited from parent vm
+	code          *bytecode
+	env           map[string]Value
+	params        []string         // Parameter names for binding
+	builtins      map[string]Value // Builtins available to closure (includes custom functions)
+	limits        *sandboxLimits   // Sandbox limits inherited from parent vm
+	maxDepth      int              // Max call depth inherited from parent vm
+	strictMode    bool             // Strict mode flag inherited from parent vm
+	numericMode   NumericMode      // Numeric policy inherited from parent vm
+	nonFiniteMode NonFiniteMode    // Non-finite policy inherited from parent vm
 }
 
 // checkContext returns [ErrOperationCancelled] when the Run context is done.
@@ -1874,11 +2113,11 @@ func (vm *execVM) checkLimits() error {
 	if limits.maxMemory > 0 {
 		// Memory estimation can be expensive (walks env recursively). Only do it periodically.
 		// This still provides a strong safety net while keeping per-op overhead low.
-		if (vm.opsCount & 1023) != 0 {
+		if (vm.opsCount & sandboxCheckMask) != 0 {
 			return nil
 		}
-		// Estimate memory: 32 bytes per Value on stack + env entries
-		estimatedMemory := int64(vm.sp) * 32
+		// Estimate memory: vmValueBaseBytes per Value on stack + env entries
+		estimatedMemory := int64(vm.sp) * vmValueBaseBytes
 		for _, v := range vm.env {
 			estimatedMemory += vm.estimateValueMemory(v)
 			if estimatedMemory > limits.maxMemory {
@@ -1903,21 +2142,19 @@ func (vm *execVM) estimateValueMemory(v Value) int64 {
 const maxMemoryEstimateDepth = 100
 
 func (vm *execVM) estimateValueMemoryWithDepth(v Value, depth int) int64 {
-	const valueBaseSize = 32 // Base size of Value struct
-
 	// Prevent infinite recursion on cyclic structures
 	if depth > maxMemoryEstimateDepth {
-		return valueBaseSize
+		return vmValueBaseBytes
 	}
 
 	switch v.kind {
 	case kindString:
 		if s, ok := v.ptr.(string); ok {
-			return valueBaseSize + int64(len(s))
+			return vmValueBaseBytes + int64(len(s))
 		}
 	case kindArray:
 		if arr, ok := v.ptr.([]any); ok {
-			size := valueBaseSize + int64(len(arr))*8 // Pointer per element
+			size := vmValueBaseBytes + int64(len(arr))*8 // Pointer per element
 			for _, elem := range arr {
 				size += vm.estimateValueMemoryWithDepth(NewValue(elem), depth+1)
 			}
@@ -1925,7 +2162,7 @@ func (vm *execVM) estimateValueMemoryWithDepth(v Value, depth int) int64 {
 		}
 	case kindMap:
 		if m, ok := v.ptr.(map[string]any); ok {
-			size := valueBaseSize + int64(len(m))*32 // Rough estimate per entry
+			size := vmValueBaseBytes + int64(len(m))*32 // Rough estimate per entry
 			for k, elem := range m {
 				size += int64(len(k))
 				size += vm.estimateValueMemoryWithDepth(NewValue(elem), depth+1)
@@ -1933,7 +2170,7 @@ func (vm *execVM) estimateValueMemoryWithDepth(v Value, depth int) int64 {
 			return size
 		}
 	}
-	return valueBaseSize
+	return vmValueBaseBytes
 }
 
 // checkFunctionAllowed checks if a function is allowed by sandbox rules.

@@ -64,13 +64,26 @@ func main() {
 	leDemo := &hyperex.LexerError{Message: "unterminated block comment", Line: 1, Column: 1, Source: "/*"}
 	fmt.Printf("  *LexerError demo: %v\n", leDemo)
 
-	fmt.Println("\n=== Other sentinels (errors.Is-ready) ===")
-	fmt.Println("  Also defined: ErrInvalidOperation, ErrNilDereference, ErrNotCallable,")
-	fmt.Println("  ErrArgumentCount, ErrInvalidType, ErrNotIterable, ErrKeyNotFound,")
-	fmt.Println("  ErrInvalidSliceIndex, ErrIntegerOverflow, ErrInvalidRegex, ErrMaxCallDepth")
-	fmt.Println("  (plus sandbox sentinels — see sandbox example)")
+	fmt.Println("\n=== ErrNonFinite / ErrSourceTooLarge ===")
+	nf := hyperex.New(
+		hyperex.WithNumericMode(hyperex.NumericFloat64),
+		hyperex.WithNonFinite(hyperex.NonFiniteError),
+	)
+	_, err = nf.Eval(ctx, `sqrt(-1)`)
+	fmt.Printf("  errors.Is(ErrNonFinite):     %v\n", errors.Is(err, hyperex.ErrNonFinite))
+	_, err = hyperex.New(hyperex.WithMaxSourceBytes(4)).Compile(`1 + 2 + 3`)
+	fmt.Printf("  errors.Is(ErrSourceTooLarge): %v\n", errors.Is(err, hyperex.ErrSourceTooLarge))
 
-	fmt.Println("\n=== Constructed errors (optional) ===")
+	fmt.Println("\n=== Other sentinels (see dedicated recipes) ===")
+	fmt.Println("  Strict:   ErrInvalidConversion")
+	fmt.Println("  Context:  ErrOperationCancelled")
+	fmt.Println("  Sandbox:  ErrOpsLimitExceeded, ErrTimeout, ErrFunctionNotAllowed,")
+	fmt.Println("            ErrAssignmentNotAllowed, ErrMaxCallDepth, ErrStackOverflow,")
+	fmt.Println("            ErrMemoryLimitExceeded")
+	fmt.Println("  Runtime:  ErrNotCallable, ErrArgumentCount, ErrInvalidType,")
+	fmt.Println("            ErrInvalidSliceIndex, ErrInvalidRegex")
+
+	fmt.Println("\n=== Constructed errors ===")
 	re := hyperex.NewRuntimeErrorf("custom failure: %s", "demo")
 	fmt.Printf("  NewRuntimeErrorf: %v\n", re)
 	te := hyperex.NewTypeError("mismatch", "int", "string")

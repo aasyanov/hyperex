@@ -27,5 +27,3 @@ func float64ToInt64Exact(f float64) (int64, bool) {
 	}
 	return int64(f), true
 }
-
-

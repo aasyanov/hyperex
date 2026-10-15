@@ -45,11 +45,11 @@ func main() {
 	must(err)
 	fmt.Printf("Note field:     %v\n", note)
 
-	// WithEnv wires a sample struct for typed compile checks, then Eval still takes a value.
-	typed := hyperex.New(hyperex.WithEnv(Order{}))
+	// WithTypeCheck wires a sample struct for typed compile checks; Eval still takes a value.
+	typed := hyperex.New(hyperex.WithTypeCheck(Order{}))
 	result, err = typed.Eval(ctx, `price * qty`, order)
 	must(err)
-	fmt.Printf("WithEnv Eval:   %v\n", result)
+	fmt.Printf("WithTypeCheck Eval:   %v\n", result)
 }
 
 func must(err error) {

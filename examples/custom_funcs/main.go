@@ -1,4 +1,7 @@
-// Package main demonstrates custom functions and operator overloads.
+// Custom host functions and operator overloads.
+// WithFunction is a trust escape hatch: MaxOps / memory / timeout do not bound
+// arbitrary work inside the callback. Prefer WithSafeFunction under MaxOps
+// (see scada_quality).
 package main
 
 import (

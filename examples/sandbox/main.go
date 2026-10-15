@@ -68,6 +68,10 @@ func main() {
 	v, err := cfgEng.Eval(ctx, `sum([1, 2, 3])`)
 	must(err)
 	fmt.Printf("SandboxConfig fields:  %v\n", v)
+
+	// Compile-time source size budget (Engine Option, not SandboxConfig).
+	_, err = hyperex.New(hyperex.WithMaxSourceBytes(8)).Compile(`price * qty + fee`)
+	printSentinel("WithMaxSourceBytes", err)
 }
 
 func printSentinel(label string, err error) {
@@ -91,6 +95,8 @@ func printSentinel(label string, err error) {
 		matched = "ErrMaxCallDepth"
 	case errors.Is(err, hyperex.ErrStackOverflow):
 		matched = "ErrStackOverflow"
+	case errors.Is(err, hyperex.ErrSourceTooLarge):
+		matched = "ErrSourceTooLarge"
 	}
 	fmt.Printf("%-22s matched=%s  err=%v\n", label+":", matched, err)
 }

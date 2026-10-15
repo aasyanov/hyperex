@@ -86,6 +86,7 @@ const (
 )
 
 // instruction represents a single bytecode instruction.
+// Op is a small integer; amd64 inserts pad before Arg (Sizeof 40 = budget ceiling).
 type instruction struct {
 	Op   opcode
 	Arg  int    // Primary argument (index, count, offset)

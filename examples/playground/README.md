@@ -96,4 +96,4 @@ playground/
 
 ## License
 
-MIT — part of the SMP project.
+MIT — see the module [LICENSE](../../LICENSE).

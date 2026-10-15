@@ -91,7 +91,7 @@ func GetBuiltinFunctions() []BuiltinFunction {
 		{Name: "string", Category: catType, Description: "Convert to string", Signature: "string(x) → string", Example: "string(42)"},
 		{Name: "bool", Category: catType, Description: "Convert to bool", Signature: "bool(x) → bool", Example: "bool(1)"},
 		{Name: exType, Category: catType, Description: "Get type name", Signature: "type(x) → string", Example: "type([1,2])"},
-		{Name: "isNil", Category: catType, Description: "Check if nil", Signature: "isNil(x) → bool", Example: "isNil(null)"},
+		{Name: "isNil", Category: catType, Description: "Check if nil", Signature: "isNil(x) → bool", Example: "isNil(nil)"},
 
 		// Utility
 		{Name: "keys", Category: catUtility, Description: "Map keys", Signature: "keys(map) → array", Example: `keys({"a":1,"b":2})`},

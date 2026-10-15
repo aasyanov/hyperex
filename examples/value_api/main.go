@@ -1,8 +1,9 @@
-// Library-style Value API demos (no expression eval required).
+// Library-style Value API (constructors, Try*, Equal/Compare, Index/Get).
 package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/aasyanov/hyperex"
 )
@@ -18,6 +19,8 @@ func main() {
 	vMap := hyperex.Map(map[string]any{"a": 1, "b": "x"})
 	vNil := hyperex.Nil
 	vFunc := hyperex.Func(func(x int) int { return x * 2 })
+	vTime := hyperex.Time(time.Date(2024, 6, 15, 14, 30, 0, 0, time.UTC))
+	vDur := hyperex.Duration(90 * time.Minute)
 
 	fmt.Printf("  NewValue(42): Type=%s Interface=%v\n", vNew.Type(), vNew.Interface())
 	fmt.Printf("  Int(7):       Type=%s\n", vInt.Type())
@@ -28,6 +31,8 @@ func main() {
 	fmt.Printf("  Map:          Type=%s Len=%d IsMap=%v\n", vMap.Type(), vMap.Len(), vMap.IsMap())
 	fmt.Printf("  Nil:          Type=%s IsNil=%v\n", vNil.Type(), vNil.IsNil())
 	fmt.Printf("  Func:         Type=%s IsFunc=%v\n", vFunc.Type(), vFunc.IsFunc())
+	fmt.Printf("  Time:         Type=%s Interface=%v\n", vTime.Type(), vTime.Interface())
+	fmt.Printf("  Duration:     Type=%s Interface=%v\n", vDur.Type(), vDur.Interface())
 
 	fmt.Println("\n=== Try* conversions ===")
 	if b, err := vBool.TryBool(); err != nil {

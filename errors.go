@@ -109,15 +109,27 @@ func (e *TypeCheckErrors) Len() int {
 }
 
 // RuntimeError represents an error during expression evaluation.
-// When Cause is a package sentinel (via Unwrap), errors.Is(err, Err…) works
-// without comparing Message strings.
+// When a package sentinel is wrapped in the unexported cause field,
+// Unwrap and errors.Is(err, Err…) match that sentinel without comparing Message strings.
+//
+// Expected and Got are optional kind/type diagnostics (additive); Error() does
+// not include them so existing string assertions stay stable.
+//
+// Offset / Line / Column are optional source locations (0 = unknown). AST nodes
+// currently lack positions, so runtime faults typically leave these at 0 until
+// a compile-time source map exists. Lex/parse errors use [LexerError] / [ParseError].
 type RuntimeError struct {
-	Message string
-	Op      string
-	Left    string
-	Right   string
-	Source  string // Original expression (optional)
-	cause   error  // wrapped sentinel or underlying error
+	Message  string
+	Op       string
+	Left     string
+	Right    string
+	Source   string // Original expression (optional)
+	Expected string // expected kind/type (optional, additive)
+	Got      string // actual kind/type (optional, additive)
+	Offset   int    // 0-based byte offset (0 = unknown)
+	Line     int    // 1-based line (0 = unknown)
+	Column   int    // 1-based column (0 = unknown)
+	cause    error  // wrapped sentinel or underlying error
 }
 
 func (e *RuntimeError) Error() string {
@@ -145,12 +157,17 @@ func (e *RuntimeError) Unwrap() error {
 // All fields including the wrapped cause are preserved.
 func (e *RuntimeError) WithSource(source string) *RuntimeError {
 	return &RuntimeError{
-		Message: e.Message,
-		Op:      e.Op,
-		Left:    e.Left,
-		Right:   e.Right,
-		Source:  source,
-		cause:   e.cause,
+		Message:  e.Message,
+		Op:       e.Op,
+		Left:     e.Left,
+		Right:    e.Right,
+		Source:   source,
+		Expected: e.Expected,
+		Got:      e.Got,
+		Offset:   e.Offset,
+		Line:     e.Line,
+		Column:   e.Column,
+		cause:    e.cause,
 	}
 }
 
@@ -218,12 +235,6 @@ var (
 	// ErrIndexOutOfBounds is returned when an array/string index is out of range.
 	ErrIndexOutOfBounds = errors.New("hyperex: index out of bounds")
 
-	// ErrInvalidOperation is returned for operations that are not valid for the operand types.
-	ErrInvalidOperation = errors.New("hyperex: invalid operation")
-
-	// ErrNilDereference is returned when a nil value is dereferenced.
-	ErrNilDereference = errors.New("hyperex: nil dereference")
-
 	// ErrNotCallable is returned when attempting to call a non-callable value.
 	ErrNotCallable = errors.New("hyperex: value is not callable")
 
@@ -233,20 +244,11 @@ var (
 	// ErrInvalidType is returned when a value has an unexpected type for an operation.
 	ErrInvalidType = errors.New("hyperex: invalid type")
 
-	// ErrNotIterable is returned when attempting to iterate a non-iterable value.
-	ErrNotIterable = errors.New("hyperex: value is not iterable")
-
 	// ErrNotIndexable is returned when attempting to index a non-indexable value.
 	ErrNotIndexable = errors.New("hyperex: value is not indexable")
 
-	// ErrKeyNotFound is returned when a map key does not exist.
-	ErrKeyNotFound = errors.New("hyperex: key not found")
-
 	// ErrInvalidSliceIndex is returned when slice bounds or step are invalid.
 	ErrInvalidSliceIndex = errors.New("hyperex: invalid slice index")
-
-	// ErrIntegerOverflow is returned when an integer arithmetic operation overflows.
-	ErrIntegerOverflow = errors.New("hyperex: integer overflow")
 
 	// ErrInvalidRegex is returned when a regular expression pattern fails to compile.
 	ErrInvalidRegex = errors.New("hyperex: invalid regular expression")
@@ -259,6 +261,31 @@ var (
 
 	// ErrInvalidConversion is returned in strict mode when a type conversion fails.
 	ErrInvalidConversion = errors.New("hyperex: invalid type conversion")
+
+	// ErrNonFinite is returned under [NonFiniteError] when Eval would return NaN or Inf.
+	ErrNonFinite = errors.New("hyperex: non-finite float result")
+
+	// ErrSourceTooLarge is returned by [Engine.Compile] when the expression exceeds
+	// [WithMaxSourceBytes].
+	ErrSourceTooLarge = errors.New("hyperex: source too large")
+
+	// ErrOpsLimitExceeded is returned when bytecode operation count exceeds MaxOps.
+	ErrOpsLimitExceeded = errors.New("hyperex: operations limit exceeded")
+
+	// ErrMemoryLimitExceeded is returned when estimated memory usage exceeds MaxMemory.
+	ErrMemoryLimitExceeded = errors.New("hyperex: memory limit exceeded")
+
+	// ErrTimeout is returned when evaluation exceeds the configured Timeout.
+	ErrTimeout = errors.New("hyperex: execution timeout")
+
+	// ErrFunctionNotAllowed is returned when a called function is denied by allow/deny lists or secure mode.
+	ErrFunctionNotAllowed = errors.New("hyperex: function not allowed")
+
+	// ErrAssignmentNotAllowed is returned when assignment occurs under WithReadOnly(true).
+	ErrAssignmentNotAllowed = errors.New("hyperex: assignment not allowed in read-only mode")
+
+	// ErrStackOverflow is returned when vm stack depth exceeds MaxStackDepth.
+	ErrStackOverflow = errors.New("hyperex: stack overflow")
 )
 
 // wrapRuntime wraps a cause (typically a package sentinel) in a RuntimeError.
@@ -276,20 +303,16 @@ func wrapRuntime(cause error) *RuntimeError {
 func isKnownRuntimeErr(err error) bool {
 	return errors.Is(err, ErrDivisionByZero) ||
 		errors.Is(err, ErrIndexOutOfBounds) ||
-		errors.Is(err, ErrInvalidOperation) ||
-		errors.Is(err, ErrNilDereference) ||
 		errors.Is(err, ErrNotCallable) ||
 		errors.Is(err, ErrArgumentCount) ||
 		errors.Is(err, ErrInvalidType) ||
-		errors.Is(err, ErrNotIterable) ||
 		errors.Is(err, ErrNotIndexable) ||
-		errors.Is(err, ErrKeyNotFound) ||
 		errors.Is(err, ErrInvalidSliceIndex) ||
-		errors.Is(err, ErrIntegerOverflow) ||
 		errors.Is(err, ErrInvalidRegex) ||
 		errors.Is(err, ErrMaxCallDepth) ||
 		errors.Is(err, ErrOperationCancelled) ||
-		errors.Is(err, ErrInvalidConversion)
+		errors.Is(err, ErrInvalidConversion) ||
+		errors.Is(err, ErrNonFinite)
 }
 
 // NewRuntimeErrorf creates a new RuntimeError with formatted message
@@ -300,4 +323,56 @@ func NewRuntimeErrorf(format string, args ...any) *RuntimeError {
 // NewTypeError creates a new TypeError with expected/got info
 func NewTypeError(msg, expected, got string) *TypeError {
 	return &TypeError{Message: msg, Expected: expected, Got: got}
+}
+
+// SandboxError represents a sandbox violation error.
+type SandboxError struct {
+	Type    string // "ops_limit", "timeout", "function_denied", etc.
+	Message string
+	Limit   int64 // The limit that was exceeded
+	Actual  int64 // The actual value
+	cause   error
+}
+
+func (e *SandboxError) Error() string {
+	return e.Message
+}
+
+// Unwrap returns the underlying sentinel cause, if any.
+func (e *SandboxError) Unwrap() error {
+	return e.cause
+}
+
+// Is implements errors.Is for SandboxError.
+// Prefer matching the wrapped cause; fall back to Type for errors constructed without cause.
+func (e *SandboxError) Is(target error) bool {
+	if e.cause != nil && target == e.cause {
+		return true
+	}
+	switch target {
+	case ErrOpsLimitExceeded:
+		return e.Type == sandboxOpsLimit
+	case ErrMemoryLimitExceeded:
+		return e.Type == sandboxMemoryLimit
+	case ErrTimeout:
+		return e.Type == sandboxTimeout
+	case ErrFunctionNotAllowed:
+		return e.Type == sandboxFunctionDenied
+	case ErrAssignmentNotAllowed:
+		return e.Type == sandboxAssignmentDenied
+	case ErrStackOverflow:
+		return e.Type == sandboxStackOverflow
+	}
+	return false
+}
+
+// sandboxErr constructs a SandboxError with an optional sentinel cause.
+func sandboxErr(cause error, typ, msg string, limit, actual int64) *SandboxError {
+	return &SandboxError{
+		Type:    typ,
+		Message: msg,
+		Limit:   limit,
+		Actual:  actual,
+		cause:   cause,
+	}
 }

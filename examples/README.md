@@ -17,11 +17,21 @@ Build all recipes (including playground):
 go build ./examples/...
 ```
 
+## Design
+
+| Layer | Role |
+|-------|------|
+| [playground/](playground/) | Interactive **language** surface (operators, builtins, options UI) |
+| Cookbook dirs below | **Go public API** embedding recipes — one primary lesson each |
+| Root `example_test.go` | Tiny GoDoc `Example*` snippets (pkg.go.dev) |
+
+Recipes stay English-only, stdlib + `hyperex` only, and print labeled output safe for a short `go run`.
+
 ## Interactive playground
 
 | Path | Description |
 |------|-------------|
-| [playground/](playground/) | Interactive web REPL — language surface, builtins, eval options, analyze/profile/transforms |
+| [playground/](playground/) | Web REPL — language surface, builtins, eval options, analyze/profile/transforms |
 
 ```bash
 go run ./examples/playground/
@@ -29,33 +39,35 @@ go run ./examples/playground/
 
 Open http://localhost:9090 — see [playground/README.md](playground/README.md).
 
-The playground covers the **interactive language surface** (operators, builtins, higher-order helpers, sample catalogs). The cookbook dirs below focus on the **Go public API**.
-
 ## Cookbook recipes
 
 | Dir | Topic |
 |-----|-------|
-| [basic/](basic/) | `Eval`, typed `Eval*`, `MustEval` (package + Engine) |
-| [compile_reuse/](compile_reuse/) | `New`, `Compile` / `MustCompile`, `Program.Eval*`, `Source` |
-| [struct_env/](struct_env/) | Struct env with `expr` tags; `WithEnv` |
-| [custom_funcs/](custom_funcs/) | `WithFunction(s)`, `AddFunction`, `WithOperator` |
-| [sandbox/](sandbox/) | Sandbox options + `errors.Is` on limit/deny sentinels |
+| [basic/](basic/) | Package vs Engine one-shot `Eval*` / `MustEval` |
+| [compile_reuse/](compile_reuse/) | `Compile` / `MustCompile`, `Program.Eval*`, `Source`, `ResultHint` |
+| [struct_env/](struct_env/) | Struct env with `expr` tags; `WithTypeCheck` |
+| [custom_funcs/](custom_funcs/) | `WithFunction(s)`, `AddFunction`, `WithOperator` (trust note) |
+| [sandbox/](sandbox/) | Sandbox options + `WithMaxSourceBytes` + sentinel `errors.Is` |
+| [numeric/](numeric/) | `WithNumericMode` / `WithNonFinite` (+ SecureCalc preset link) |
+| [scada_secure/](scada_secure/) | `NewSecureCalc` / `NewSecureAuto` + `time.Time` env + `BuiltinNames` |
+| [scada_quality/](scada_quality/) | Quality maps `{v,q}` + `WithSafeFunction` / `WithSafeFunctionMeta` |
+| [scada_hotpath/](scada_hotpath/) | Compile-once + env reuse + `EvalValue` / `EvalFloat` |
 | [strict/](strict/) | `WithStrictMode` + `ErrInvalidConversion` |
 | [context_cancel/](context_cancel/) | Cancel / deadline → `ErrOperationCancelled` |
 | [stats/](stats/) | `Engine.Stats` (`Compiles` / `Evals` / `EvalErrors`) |
-| [analyze_profile/](analyze_profile/) | `Analyze`, `ProfileExpr`, `Program.Analyze` / `Profile`, `Complexity` |
-| [transform/](transform/) | `Simplify`, `Expand`, `Inline` (string APIs) |
-| [validate_extract/](validate_extract/) | `Validate*`, `Extract*`, `CheckExpressionType` |
-| [typecheck/](typecheck/) | `NewTypeChecker`, `WithVar` / `WithFunc` / `WithStructEnv`, `WithTypeCheck` |
-| [compile_options/](compile_options/) | `AsBool`/`AsInt`/`AsFloat`/`AsString`, `Unoptimized`, optimize options |
-| [errors_demo/](errors_demo/) | Common sentinels, `ParseError.Line`/`Column`, constructed errors |
-| [value_api/](value_api/) | `Value` constructors, `Try*`, `Equal`, `Compare`, `Index`, `Get` |
-| [predicates/](predicates/) | `all`/`any`/`none`/`one` truthiness + predicate forms, pipe |
+| [analyze_profile/](analyze_profile/) | `Analyze`, `ProfileExpr`, `Program.Analyze` / `Profile`, `Warn*` |
+| [transform/](transform/) | `Simplify` / `Expand` / `Inline` + `Tokenize` / `Parse` / `Walk` |
+| [validate_extract/](validate_extract/) | `Validate*` / `Extract*` / `TypeChecker` via `Parse` |
+| [compile_options/](compile_options/) | `As*` + `Unoptimized` (visible OpsCount diff) |
+| [errors_demo/](errors_demo/) | Common typed errors + `ErrNonFinite` / `ErrSourceTooLarge` |
+| [value_api/](value_api/) | `Value` constructors (incl. `Time` / `Duration`), `Try*`, `Equal` |
+| [predicates/](predicates/) | `all` / `any` / `none` / `one` truthiness + predicate + pipe |
 
 Example:
 
 ```bash
 go run ./examples/basic/
+go run ./examples/numeric/
 go run ./examples/sandbox/
 ```
 
@@ -74,8 +86,9 @@ Public symbol → primary example (or playground note).
 | `Engine.AddFunction` | `custom_funcs` |
 | `Engine.Stats` / `Stats` | `stats` |
 | `Program.Eval` | `compile_reuse`, `struct_env` |
-| `Program.EvalBool` / `EvalInt` / `EvalFloat` / `EvalString` | `compile_reuse`, `strict` |
-| `Program.Source` | `compile_reuse` |
+| `Program.EvalValue` | `scada_hotpath` |
+| `Program.EvalBool` / `EvalInt` / `EvalFloat` / `EvalString` | `compile_reuse`, `strict`, `scada_hotpath` |
+| `Program.Source` / `ResultHint` | `compile_reuse`, `compile_options` |
 | `Program.Analyze` / `Profile` | `analyze_profile` |
 | `Eval` / `MustEval` (package) | `basic` |
 | `EvalBool` / `EvalInt` / `EvalFloat` / `EvalString` (package) | `basic` |
@@ -87,45 +100,55 @@ Public symbol → primary example (or playground note).
 |--------|------------|
 | `Option` / `CompileOption` | all configured recipes |
 | `WithFunction` / `WithFunctions` | `custom_funcs` |
+| `WithSafeFunction` / `WithSafeFunctionMeta` / quality builtins | `scada_quality` |
 | `WithOperator` | `custom_funcs` |
-| `WithEnv` | `struct_env` |
 | `WithOptimize` / `WithConstantFolding` / `WithStrengthReduction` | `compile_options` |
-| `WithTypeCheck` | `typecheck`, `validate_extract` |
+| `WithTypeCheck` | `struct_env`, `validate_extract` |
 | `WithMaxCallDepth` | `sandbox` |
 | `WithStrictMode` | `strict` |
+| `WithNumericMode` / `WithNonFinite` | `numeric` |
+| `WithMaxSourceBytes` | `sandbox`, `errors_demo` |
 | `WithSandbox` / `SandboxConfig` | `sandbox` |
 | `WithSecureSandbox` | `sandbox` |
 | `WithMaxOps` / `WithTimeout` | `sandbox` |
 | `WithAllowedFuncs` / `WithDeniedFuncs` | `sandbox` |
 | `WithReadOnly` | `sandbox` |
-| `AsBool` / `AsInt` / `AsFloat` / `AsString` | `compile_options` |
+| `PresetSecureCalc` / `PresetSecureAuto` / `NewSecureCalc` / `NewSecureAuto` | `scada_secure`, `numeric`, `scada_quality` |
+| `AsBool` / `AsInt` / `AsFloat` / `AsString` | `compile_options`, `compile_reuse` |
 | `Unoptimized` | `compile_options` |
 
-### Analytics / transforms / validation
+### Analytics / transforms / validation / studio
 
 | Symbol | Covered by |
 |--------|------------|
-| `Analyze` / `Analysis` | `analyze_profile` |
+| `Analyze` / `Analysis` / `Warnings` | `analyze_profile` |
+| `WarnAmbiguousBitwiseOr` / `WarnBuiltinNamePipe` | `analyze_profile` |
 | `Complexity` (+ constants / `String`) | `analyze_profile` |
-| `ProfileExpr` / `Profile` | `analyze_profile` |
-| `CheckExpressionType` | `validate_extract`, `typecheck` |
-| `Simplify` / `Expand` / `Inline` | `transform` |
+| `ProfileExpr` / `Profile` | `analyze_profile`, `compile_options` |
+| `CheckExpressionType` | `validate_extract` |
+| `Simplify` / `Expand` / `Inline` | `transform`, `compile_options` |
 | `ExtractVariables` / `ExtractFunctions` | `validate_extract` |
+| `ExtractVariablesOpts` / `ExtractMemberRoots` | `validate_extract` |
 | `Validate` / `ValidateWithEnv` | `validate_extract` |
-| `Type` / `Type*` constants / `Type.String` | `validate_extract`, `typecheck` |
-| `NewTypeChecker` / `TypeChecker` / `FuncSig` | `typecheck` |
-| `TypeChecker.WithVar` / `WithFunc` / `WithStructEnv` / `WithEnvType` / `WithEnvTypes` | `typecheck` |
+| `Type` / `Type*` / `Type.String` | `validate_extract` |
+| `NewTypeChecker` / `TypeChecker` / `FuncSig` | `validate_extract` |
+| `TypeChecker.WithVar` / `WithFunc` / `WithStructEnv` / `WithEnvTypes` | `validate_extract` |
+| `TypeChecker.Check` / `Infer` | `validate_extract` (via `Parse`) |
+| `Tokenize` / `Token` / `TokenKind` | `transform` |
+| `Parse` / `Walk` / `Transform` / `ASTToString` | `transform` |
+| `AnalyzeAST` | prefer `Analyze` / `Program.Analyze` |
 
 ### Value API
 
 | Symbol | Covered by |
 |--------|------------|
 | `Value` / `Nil` / `NewValue` | `value_api` |
-| `Bool` / `Int` / `Float` / `String` / `Array` / `Map` / `Func` | `value_api` |
+| `Bool` / `Int` / `Float` / `String` / `Array` / `Map` / `Func` / `Time` / `Duration` | `value_api`, `scada_secure` |
 | `Is*` / `Type` / `Len` / `Interface` | `value_api` |
+| `BuiltinNames` / `IsBuiltin` | `scada_secure` |
 | `TryBool` / `TryInt` / `TryFloat` / `TryString` | `value_api` |
-| `Bool`/`Int`/`Float`/`String`/`Array`/`Map` accessors | `value_api` |
 | `Equal` / `Compare` / `Index` / `Get` | `value_api` |
+| `ResultHint` / `ResultHint*` | `compile_reuse`, `compile_options` |
 
 ### Language builtins (selected)
 
@@ -141,8 +164,8 @@ Public symbol → primary example (or playground note).
 | `LexerError` | `errors_demo` |
 | `UndefinedError` | `errors_demo` |
 | `RuntimeError` (+ `Unwrap` / `WithSource`) | `errors_demo` |
-| `TypeError` / `NewTypeError` | `errors_demo`, `typecheck` |
-| `TypeCheckErrors` | `typecheck` (via Compile / ValidateWithEnv) |
+| `TypeError` / `NewTypeError` | `errors_demo`, `validate_extract` |
+| `TypeCheckErrors` | `validate_extract` |
 | `SandboxError` (+ `Is` / `Unwrap`) | `sandbox` |
 | `NewRuntimeErrorf` | `errors_demo` |
 | `ErrDivisionByZero` / `ErrIndexOutOfBounds` / `ErrNotIndexable` | `errors_demo` |
@@ -150,19 +173,9 @@ Public symbol → primary example (or playground note).
 | `ErrOperationCancelled` | `context_cancel` |
 | `ErrOpsLimitExceeded` / `ErrTimeout` / `ErrFunctionNotAllowed` / `ErrAssignmentNotAllowed` | `sandbox` |
 | `ErrMaxCallDepth` | `sandbox` |
-| Other runtime/sandbox sentinels (`ErrInvalidOperation`, `ErrNilDereference`, `ErrNotCallable`, `ErrArgumentCount`, `ErrInvalidType`, `ErrNotIterable`, `ErrKeyNotFound`, `ErrInvalidSliceIndex`, `ErrIntegerOverflow`, `ErrInvalidRegex`, `ErrMemoryLimitExceeded`, `ErrStackOverflow`) | listed in `errors_demo` / `sandbox` for `errors.Is`; trigger conditions vary |
-
-### AST / Node-level (unexported concretes)
-
-Concrete AST node types are **unexported**. There is no public `Parse` returning `Node`, so these require a `Node` you cannot construct from outside the package:
-
-| Symbol | Notes |
-|--------|-------|
-| `Node` | Interface only; concretes unexported |
-| `Walk` / `Transform` | Node-level; use string APIs instead |
-| `ASTToString` | Used internally by `Simplify` / `Expand` / `Inline` |
-| `AnalyzeAST` | Prefer `Analyze` / `Program.Analyze` |
-| `TypeChecker.Check` / `Infer` | Prefer `CheckExpressionType`, `ValidateWithEnv`, `WithTypeCheck` |
+| `ErrNonFinite` | `numeric`, `errors_demo` |
+| `ErrSourceTooLarge` | `sandbox`, `errors_demo` |
+| Other runtime/sandbox sentinels | listed in `errors_demo` / `sandbox`; trigger conditions vary |
 
 Language syntax, builtins catalogs, and interactive option toggles are covered by the **playground UI**.
 
@@ -170,4 +183,6 @@ Language syntax, builtins catalogs, and interactive option toggles are covered b
 
 - Import `github.com/aasyanov/hyperex` (+ stdlib) only.
 - All Eval surfaces take `context.Context` first.
+- One primary lesson per directory; cross-links in file comments when needed.
 - Recipes print labeled output and are safe to `go run` briefly.
+- English only on the published surface (same rule as README / LANGUAGE / CHANGELOG).

@@ -1,29 +1,7 @@
 package hyperex
 
 import (
-	"errors"
 	"time"
-)
-
-// Sandbox sentinel errors.
-var (
-	// ErrOpsLimitExceeded is returned when bytecode operation count exceeds MaxOps.
-	ErrOpsLimitExceeded = errors.New("hyperex: operations limit exceeded")
-
-	// ErrMemoryLimitExceeded is returned when estimated memory usage exceeds MaxMemory.
-	ErrMemoryLimitExceeded = errors.New("hyperex: memory limit exceeded")
-
-	// ErrTimeout is returned when evaluation exceeds the configured Timeout.
-	ErrTimeout = errors.New("hyperex: execution timeout")
-
-	// ErrFunctionNotAllowed is returned when a called function is denied by allow/deny lists or secure mode.
-	ErrFunctionNotAllowed = errors.New("hyperex: function not allowed")
-
-	// ErrAssignmentNotAllowed is returned when assignment occurs under WithReadOnly(true).
-	ErrAssignmentNotAllowed = errors.New("hyperex: assignment not allowed in read-only mode")
-
-	// ErrStackOverflow is returned when vm stack depth exceeds MaxStackDepth.
-	ErrStackOverflow = errors.New("hyperex: stack overflow")
 )
 
 // SandboxConfig defines resource limits and restrictions for safe execution.
@@ -33,6 +11,8 @@ type SandboxConfig struct {
 	MaxOps int64
 
 	// MaxMemory is the maximum memory usage in bytes (approximate).
+	// Estimation charges stack slots plus walked env Values; large heap behind a
+	// single stack Value may be under-counted until it appears in env.
 	// 0 means unlimited.
 	MaxMemory int64
 
@@ -65,7 +45,8 @@ type SandboxConfig struct {
 	// Secure enables hardened sandbox mode for untrusted expressions.
 	//
 	// When enabled, HyperEx will:
-	// - Reject non-primitive / non-JSON-like values in the environment (no structs, pointers, funcs, chans, etc.)
+	// - Reject non-primitive / non-JSON-like values in the environment (no arbitrary structs, pointers, funcs, chans, etc.)
+	// - Accept time.Time and time.Duration (Secure-compatible first-class kinds)
 	// - Disallow reflection-based access on external Go objects (kindAny) during evaluation
 	// - Disallow calling non-named functions (e.g. env-provided Go funcs), even if allow/deny lists are not set
 	//
@@ -206,8 +187,10 @@ func WithReadOnly(readOnly bool) Option {
 	}
 }
 
-// buildSandboxLimits converts SandboxConfig to runtime limits.
-func buildSandboxLimits(config *SandboxConfig) *sandboxLimits {
+// buildSandboxLimitsStatic converts SandboxConfig to runtime limits without a
+// per-eval deadline. Allowed/Denied maps are immutable after construction and
+// may be shared across concurrent Evals.
+func buildSandboxLimitsStatic(config *SandboxConfig) *sandboxLimits {
 	if config == nil {
 		return nil
 	}
@@ -219,10 +202,6 @@ func buildSandboxLimits(config *SandboxConfig) *sandboxLimits {
 		maxCallDepth:  config.MaxCallDepth,
 		readOnly:      config.ReadOnly,
 		secure:        config.Secure,
-	}
-
-	if config.Timeout > 0 {
-		limits.deadline = time.Now().Add(config.Timeout)
 	}
 
 	if len(config.AllowedFuncs) > 0 {
@@ -242,54 +221,23 @@ func buildSandboxLimits(config *SandboxConfig) *sandboxLimits {
 	return limits
 }
 
-// SandboxError represents a sandbox violation error.
-type SandboxError struct {
-	Type    string // "ops_limit", "timeout", "function_denied", etc.
-	Message string
-	Limit   int64 // The limit that was exceeded
-	Actual  int64 // The actual value
-	cause   error
-}
-
-func (e *SandboxError) Error() string {
-	return e.Message
-}
-
-// Unwrap returns the underlying sentinel cause, if any.
-func (e *SandboxError) Unwrap() error {
-	return e.cause
-}
-
-// Is implements errors.Is for SandboxError.
-// Prefer matching the wrapped cause; fall back to Type for errors constructed without cause.
-func (e *SandboxError) Is(target error) bool {
-	if e.cause != nil && target == e.cause {
-		return true
+// limitsWithFreshDeadline shallow-copies base (sharing allow/deny maps) and sets
+// a fresh wall-clock deadline when timeout > 0.
+func limitsWithFreshDeadline(base *sandboxLimits, timeout time.Duration) *sandboxLimits {
+	if base == nil {
+		return nil
 	}
-	switch target {
-	case ErrOpsLimitExceeded:
-		return e.Type == sandboxOpsLimit
-	case ErrMemoryLimitExceeded:
-		return e.Type == sandboxMemoryLimit
-	case ErrTimeout:
-		return e.Type == sandboxTimeout
-	case ErrFunctionNotAllowed:
-		return e.Type == sandboxFunctionDenied
-	case ErrAssignmentNotAllowed:
-		return e.Type == sandboxAssignmentDenied
-	case ErrStackOverflow:
-		return e.Type == sandboxStackOverflow
+	out := *base
+	if timeout > 0 {
+		out.deadline = time.Now().Add(timeout)
 	}
-	return false
+	return &out
 }
 
-// sandboxErr constructs a SandboxError with an optional sentinel cause.
-func sandboxErr(cause error, typ, msg string, limit, actual int64) *SandboxError {
-	return &SandboxError{
-		Type:    typ,
-		Message: msg,
-		Limit:   limit,
-		Actual:  actual,
-		cause:   cause,
+// buildSandboxLimits converts SandboxConfig to runtime limits (fresh deadline).
+func buildSandboxLimits(config *SandboxConfig) *sandboxLimits {
+	if config == nil {
+		return nil
 	}
+	return limitsWithFreshDeadline(buildSandboxLimitsStatic(config), config.Timeout)
 }

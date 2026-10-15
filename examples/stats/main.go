@@ -1,4 +1,5 @@
-// Package main demonstrates Engine.Stats counters.
+// Engine.Stats — lock-free Compiles / Evals / EvalErrors counters.
+// Useful for process metrics; counters are cumulative for the Engine lifetime.
 package main
 
 import (
@@ -23,13 +24,14 @@ func main() {
 	must(err)
 	_, err = engine.Eval(ctx, `10 * 3`)
 	must(err)
-	_, err = engine.Eval(ctx, `missing_var`) // expected failure
+	_, err = engine.Eval(ctx, `missing_var`) // expected failure → EvalErrors++
 	if err == nil {
 		panic("expected eval error")
 	}
 
 	s := engine.Stats()
 	fmt.Printf("final:     Compiles=%d Evals=%d EvalErrors=%d\n", s.Compiles, s.Evals, s.EvalErrors)
+	fmt.Println("note:      failed Compile still counts in Compiles; failed Eval counts in both Evals and EvalErrors")
 }
 
 func must(err error) {

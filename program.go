@@ -238,7 +238,7 @@ func convertBool(v Value, strict bool) (bool, error) {
 	if err != nil {
 		return false, &RuntimeError{
 			Message:  invalidConversionMsg,
-			Expected: "bool",
+			Expected: nameBool,
 			Got:      v.Type(),
 			cause:    ErrInvalidConversion,
 		}
@@ -254,7 +254,7 @@ func convertInt(v Value, strict bool) (int64, error) {
 	if err != nil {
 		return 0, &RuntimeError{
 			Message:  invalidConversionMsg,
-			Expected: "int",
+			Expected: nameInt,
 			Got:      v.Type(),
 			cause:    ErrInvalidConversion,
 		}
@@ -270,7 +270,7 @@ func convertFloat(v Value, strict bool) (float64, error) {
 	if err != nil {
 		return 0, &RuntimeError{
 			Message:  invalidConversionMsg,
-			Expected: "float",
+			Expected: nameFloat,
 			Got:      v.Type(),
 			cause:    ErrInvalidConversion,
 		}
@@ -286,7 +286,7 @@ func convertString(v Value, strict bool) (string, error) {
 	if err != nil {
 		return "", &RuntimeError{
 			Message:  invalidConversionMsg,
-			Expected: "string",
+			Expected: nameString,
 			Got:      v.Type(),
 			cause:    ErrInvalidConversion,
 		}

@@ -45,15 +45,15 @@ const (
 func (h ResultHint) String() string {
 	switch h {
 	case ResultHintBool:
-		return "bool"
+		return nameBool
 	case ResultHintInt:
-		return "int"
+		return nameInt
 	case ResultHintFloat:
-		return "float"
+		return nameFloat
 	case ResultHintString:
-		return "string"
+		return nameString
 	default:
-		return "any"
+		return nameAny
 	}
 }
 

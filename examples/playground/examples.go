@@ -412,7 +412,7 @@ func GetAllExamples() []Category {
 				{Name: "replace", Expression: `replace("hello", "l", "L")`, Description: "Replace all", Expected: `"heLLo"`},
 				{Name: "substr", Expression: `substr("hello", 1, 3)`, Description: "Substring", Expected: `"ell"`},
 				{Name: "indexOf", Expression: `indexOf("hello", "l")`, Description: "Index of", Expected: "2"},
-				{Name: "repeat", Expression: `repeat("ab", 3)`, Description: "Repeat value into an array", Expected: `["ab", "ab", "ab"]`},
+				{Name: "repeat", Expression: exRepeatAB, Description: "Repeat value into an array", Expected: `["ab", "ab", "ab"]`},
 			},
 		},
 

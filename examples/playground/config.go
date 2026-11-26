@@ -49,7 +49,7 @@ func GetBuiltinFunctions() []BuiltinFunction {
 		{Name: "replace", Category: catString, Description: "Replace all", Signature: "replace(s, old, new) → string", Example: `replace("hello", "l", "L")`},
 		{Name: "substr", Category: catString, Description: "Substring", Signature: "substr(s, start, len?) → string", Example: `substr("hello", 1, 3)`},
 		{Name: "indexOf", Category: catString, Description: "Index of substring", Signature: "indexOf(s, sub) → int", Example: `indexOf("hello", "l")`},
-		{Name: "repeat", Category: catString, Description: "Repeat value into an array", Signature: "repeat(v, n) → array", Example: `repeat("ab", 3)`},
+		{Name: "repeat", Category: catString, Description: "Repeat value into an array", Signature: "repeat(v, n) → array", Example: exRepeatAB},
 
 		// Array
 		{Name: "first", Category: catArray, Description: "First element", Signature: "first(arr) → any", Example: "first([1,2,3])"},

@@ -41,6 +41,7 @@ const (
 	exQty               = "qty"
 	exRegion            = "region"
 	exReorderLevel      = "reorderLevel"
+	exRepeatAB          = `repeat("ab", 3)`
 	exRep               = "rep"
 	exRole              = "role"
 	exSalesNum          = "sales"

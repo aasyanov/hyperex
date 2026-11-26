@@ -248,8 +248,10 @@ func builtinChunk(vm *execVM, args []Value) (Value, error) {
 		return Nil, &RuntimeError{Message: "chunk size must be positive"}
 	}
 
-	// Calculate number of chunks and limit to prevent excessive allocation
-	numChunks := (len(arr) + size - 1) / size
+	numChunks := 0
+	if len(arr) > 0 {
+		numChunks = 1 + (len(arr)-1)/size
+	}
 	const maxChunks = 1_000_000
 	if numChunks > maxChunks {
 		return Nil, &RuntimeError{Message: fmt.Sprintf("chunk would create %d chunks, exceeds maximum %d", numChunks, maxChunks)}
@@ -257,20 +259,21 @@ func builtinChunk(vm *execVM, args []Value) (Value, error) {
 
 	result := make([]any, 0, numChunks)
 	iter := 0
-	for i := 0; i < len(arr); i += size {
+	for start := 0; start < len(arr); {
 		if vm != nil {
 			if err := vm.sandboxLoopCheck(iter); err != nil {
 				return Nil, err
 			}
 		}
 		iter++
-		end := i + size
-		if end > len(arr) {
-			end = len(arr)
+		end := len(arr)
+		if size < len(arr)-start {
+			end = start + size
 		}
-		chunk := make([]any, end-i)
-		copy(chunk, arr[i:end])
+		chunk := make([]any, end-start)
+		copy(chunk, arr[start:end])
 		result = append(result, chunk)
+		start = end
 	}
 	return Array(result), nil
 }
@@ -354,7 +357,7 @@ func builtinGroupBy(vm *execVM, args []Value) (Value, error) {
 			return Nil, err
 		}
 		// Call the key function
-		keyResult, err := callBuiltinFunc(vm, fn, []Value{NewValue(item)})
+		keyResult, err := vm.call(fn, []Value{NewValue(item)})
 		if err != nil {
 			return Nil, err
 		}
@@ -410,7 +413,7 @@ func builtinSortBy(vm *execVM, args []Value) (Value, error) {
 		if err := vm.sandboxLoopCheck(i); err != nil {
 			return Nil, err
 		}
-		keyResult, err := callBuiltinFunc(vm, fn, []Value{NewValue(item)})
+		keyResult, err := vm.call(fn, []Value{NewValue(item)})
 		if err != nil {
 			return Nil, err
 		}
@@ -424,21 +427,13 @@ func builtinSortBy(vm *execVM, args []Value) (Value, error) {
 			return Nil, err
 		}
 	}
-	// Sort using computed keys
+	// Sort using computed keys. Equal keys must return false in both directions.
 	sortSlice(keyed, func(i, j int) bool {
 		ki, kj := keyed[i].key, keyed[j].key
-
-		var less bool
-		if ki.IsNumber() && kj.IsNumber() {
-			less = ki.Float() < kj.Float()
-		} else {
-			less = ki.String() < kj.String()
-		}
-
 		if desc {
-			return !less
+			return ki.Compare(kj) > 0
 		}
-		return less
+		return ki.Compare(kj) < 0
 	})
 
 	// Extract sorted items

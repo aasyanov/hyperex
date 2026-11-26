@@ -3,7 +3,6 @@ package hyperex
 import (
 	"fmt"
 	"reflect"
-	"strings"
 )
 
 // Type represents a type in the HyperEx type system.
@@ -63,9 +62,10 @@ type FuncSig struct {
 
 // TypeChecker performs static type analysis on expressions.
 type TypeChecker struct {
-	env    map[string]Type
-	funcs  map[string]FuncSig
-	errors []error
+	env         map[string]Type
+	funcs       map[string]FuncSig
+	errors      []error
+	numericMode NumericMode
 }
 
 // NewTypeChecker creates a new type checker.
@@ -135,32 +135,21 @@ func (tc *TypeChecker) WithEnvTypes(types map[string]any) *TypeChecker {
 
 // WithStructEnv registers a struct's fields as environment types.
 func (tc *TypeChecker) WithStructEnv(val any) *TypeChecker {
-	rv := reflect.ValueOf(val)
-	if rv.Kind() == reflect.Pointer {
-		rv = rv.Elem()
-	}
-	if rv.Kind() != reflect.Struct {
+	rt := reflect.TypeOf(val)
+	if rt == nil {
 		return tc
 	}
-
-	rt := rv.Type()
+	for rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+	}
+	if rt.Kind() != reflect.Struct {
+		return tc
+	}
 	for i := 0; i < rt.NumField(); i++ {
 		field := rt.Field(i)
-		if field.PkgPath != "" {
-			continue // Skip unexported fields
-		}
-		name := field.Name
-		// Check for expr tag first, then json tag
-		if tag := field.Tag.Get("expr"); tag != "" {
-			parts := strings.Split(tag, ",")
-			if parts[0] != "" && parts[0] != "-" {
-				name = parts[0]
-			}
-		} else if tag := field.Tag.Get("json"); tag != "" {
-			parts := strings.Split(tag, ",")
-			if parts[0] != "" && parts[0] != "-" {
-				name = parts[0]
-			}
+		name, ok := envFieldName(field)
+		if !ok {
+			continue
 		}
 		tc.env[name] = tc.goTypeToHyperexType(field.Type)
 	}
@@ -178,8 +167,9 @@ func (tc *TypeChecker) cloneForCheck() *TypeChecker {
 		env[k] = v
 	}
 	return &TypeChecker{
-		env:   env,
-		funcs: tc.funcs,
+		env:         env,
+		funcs:       tc.funcs,
+		numericMode: tc.numericMode,
 	}
 }
 
@@ -206,15 +196,6 @@ func (tc *TypeChecker) check(node Node) {
 		tc.checkUnary(n)
 	case *ternaryExpr:
 		tc.check(n.Cond)
-		condType := tc.inferType(n.Cond)
-		if condType != TypeBool && condType != TypeAny && condType != TypeUnknown {
-			tc.addError(&TypeError{
-				Message:  "ternary condition must be boolean",
-				Expected: TypeBool.String(),
-				Got:      condType.String(),
-				Node:     n.Cond,
-			})
-		}
 		tc.check(n.Then)
 		tc.check(n.Else)
 	case *callExpr:
@@ -281,8 +262,18 @@ func (tc *TypeChecker) check(node Node) {
 			})
 		}
 	case *pipeExpr:
-		tc.check(n.Left)
-		tc.check(n.Right)
+		switch right := n.Right.(type) {
+		case *callExpr:
+			args := make([]Node, 0, len(right.Args)+1)
+			args = append(args, n.Left)
+			args = append(args, right.Args...)
+			tc.checkCall(&callExpr{Func: right.Func, Args: args})
+		case *ident:
+			tc.checkCall(&callExpr{Func: right, Args: []Node{n.Left}})
+		default:
+			tc.check(n.Left)
+			tc.check(n.Right)
+		}
 	case *lambdaExpr:
 		tc.check(n.Body)
 	case *letExpr:
@@ -333,15 +324,23 @@ func (tc *TypeChecker) check(node Node) {
 				})
 			}
 		}
-		// Check default values and register variables
+		oldTypes := make(map[string]Type, len(n.Pattern))
+		oldExists := make(map[string]bool, len(n.Pattern))
 		for _, field := range n.Pattern {
 			if field.Default != nil {
 				tc.check(field.Default)
 			}
-			// Register destructured variable with unknown type (could be refined)
+			oldTypes[field.Name], oldExists[field.Name] = tc.env[field.Name]
 			tc.env[field.Name] = TypeAny
 		}
 		tc.check(n.Body)
+		for _, field := range n.Pattern {
+			if oldExists[field.Name] {
+				tc.env[field.Name] = oldTypes[field.Name]
+			} else {
+				delete(tc.env, field.Name)
+			}
+		}
 	}
 }
 
@@ -360,15 +359,30 @@ func (tc *TypeChecker) checkBinary(n *binaryExpr) {
 
 	switch n.Op {
 	case "+":
-		// + works on numbers, strings, and arrays
-		if !tc.isNumeric(leftType) && leftType != TypeString && leftType != TypeArray {
+		if leftType == TypeString || rightType == TypeString {
+			break
+		}
+		numeric := tc.isNumeric(leftType) && tc.isNumeric(rightType)
+		arrays := leftType == TypeArray && rightType == TypeArray
+		if !numeric && !arrays {
 			tc.addError(&TypeError{
-				Message: "+ requires numeric, string, or array operands",
-				Got:     leftType.String(),
-				Node:    n.Left,
+				Message: "+ requires two numeric operands, two arrays, or string concatenation",
+				Got:     leftType.String() + " and " + rightType.String(),
+				Node:    n,
 			})
 		}
-	case "-", "*", "/", "%", "**":
+	case "*":
+		if leftType == TypeString && rightType == TypeInt {
+			break
+		}
+		if !tc.isNumeric(leftType) || !tc.isNumeric(rightType) {
+			tc.addError(&TypeError{
+				Message: "* requires numeric operands or string repetition",
+				Got:     leftType.String() + " and " + rightType.String(),
+				Node:    n,
+			})
+		}
+	case "-", "/", "%", "**":
 		if !tc.isNumeric(leftType) {
 			tc.addError(&TypeError{
 				Message: n.Op + " requires numeric operands",
@@ -391,24 +405,6 @@ func (tc *TypeChecker) checkBinary(n *binaryExpr) {
 				Node:    n,
 			})
 		}
-	case "&&", "||", kwAnd, "or":
-		// Logical operators require boolean operands
-		if leftType != TypeBool {
-			tc.addError(&TypeError{
-				Message:  "logical operator requires boolean operands",
-				Expected: TypeBool.String(),
-				Got:      leftType.String(),
-				Node:     n.Left,
-			})
-		}
-		if rightType != TypeBool {
-			tc.addError(&TypeError{
-				Message:  "logical operator requires boolean operands",
-				Expected: TypeBool.String(),
-				Got:      rightType.String(),
-				Node:     n.Right,
-			})
-		}
 	case "&", "|", "^", "<<", ">>", litOpShrU:
 		if leftType != TypeInt {
 			tc.addError(&TypeError{
@@ -426,7 +422,7 @@ func (tc *TypeChecker) checkBinary(n *binaryExpr) {
 				Node:     n.Right,
 			})
 		}
-	case "in":
+	case "in", opNotIn:
 		if rightType != TypeArray && rightType != TypeMap && rightType != TypeString {
 			tc.addError(&TypeError{
 				Message: "'in' requires array, map, or string on right side",
@@ -471,15 +467,6 @@ func (tc *TypeChecker) checkUnary(n *unaryExpr) {
 				Node:    n.Operand,
 			})
 		}
-	case "!", kwNot:
-		if operandType != TypeBool {
-			tc.addError(&TypeError{
-				Message:  "logical not requires boolean operand",
-				Expected: TypeBool.String(),
-				Got:      operandType.String(),
-				Node:     n.Operand,
-			})
-		}
 	case "~":
 		if operandType != TypeInt {
 			tc.addError(&TypeError{
@@ -493,6 +480,7 @@ func (tc *TypeChecker) checkUnary(n *unaryExpr) {
 }
 
 func (tc *TypeChecker) checkCall(n *callExpr) {
+	tc.check(n.Func)
 	for _, arg := range n.Args {
 		tc.check(arg)
 	}
@@ -524,8 +512,37 @@ func (tc *TypeChecker) checkCall(n *callExpr) {
 				})
 				return
 			}
+			for i, arg := range n.Args {
+				if len(sig.Params) == 0 || i >= len(sig.Params) && !sig.Variadic {
+					break
+				}
+				paramIndex := i
+				if sig.Variadic && i >= len(sig.Params)-1 {
+					paramIndex = len(sig.Params) - 1
+				}
+				expected := sig.Params[paramIndex]
+				actual := tc.inferType(arg)
+				if !tc.compatibleType(actual, expected) {
+					tc.addError(&TypeError{
+						Message:  ident.Name + " argument type mismatch",
+						Expected: expected.String(),
+						Got:      actual.String(),
+						Node:     arg,
+					})
+				}
+			}
 		}
 	}
+}
+
+func (tc *TypeChecker) compatibleType(actual, expected Type) bool {
+	if expected == TypeAny || actual == TypeAny || actual == TypeUnknown {
+		return true
+	}
+	if expected == TypeFloat && actual == TypeInt {
+		return true
+	}
+	return actual == expected
 }
 
 func (tc *TypeChecker) inferType(node Node) Type {
@@ -588,7 +605,19 @@ func (tc *TypeChecker) inferType(node Node) Type {
 	case *rangeExpr:
 		return TypeArray
 	case *pipeExpr:
-		return TypeAny // Result depends on function
+		switch right := n.Right.(type) {
+		case *callExpr:
+			if ident, ok := right.Func.(*ident); ok {
+				if sig, ok := tc.funcs[ident.Name]; ok {
+					return sig.Returns
+				}
+			}
+		case *ident:
+			if sig, ok := tc.funcs[right.Name]; ok {
+				return sig.Returns
+			}
+		}
+		return TypeAny
 	case *lambdaExpr:
 		return TypeFunc
 	case *letExpr:
@@ -631,6 +660,19 @@ func (tc *TypeChecker) inferBinaryType(n *binaryExpr) Type {
 	leftType := tc.inferType(n.Left)
 	rightType := tc.inferType(n.Right)
 
+	if n.Op == "+" && (leftType == TypeString || rightType == TypeString) {
+		return TypeString
+	}
+	if n.Op == "+" && leftType == TypeArray && rightType == TypeArray {
+		return TypeArray
+	}
+	if tc.numericMode == NumericFloat64 && tc.isNumeric(leftType) && tc.isNumeric(rightType) {
+		switch n.Op {
+		case "+", "-", "*", "/", "%", "**":
+			return TypeFloat
+		}
+	}
+
 	switch n.Op {
 	case "+":
 		if leftType == TypeString || rightType == TypeString {
@@ -659,7 +701,12 @@ func (tc *TypeChecker) inferBinaryType(n *binaryExpr) Type {
 			return TypeInt
 		}
 		return TypeFloat
-	case "==", "!=", "<", "<=", ">", ">=", "&&", "||", "in", opNotIn, "~=":
+	case "&&", "||":
+		if leftType == rightType {
+			return leftType
+		}
+		return TypeAny
+	case "==", "!=", "<", "<=", ">", ">=", "in", opNotIn, "~=":
 		return TypeBool
 	case "&", "|", "^", "<<", ">>", litOpShrU:
 		return TypeInt
@@ -672,6 +719,9 @@ func (tc *TypeChecker) inferUnaryType(n *unaryExpr) Type {
 	switch n.Op {
 	case "-":
 		operandType := tc.inferType(n.Operand)
+		if tc.numericMode == NumericFloat64 && tc.isNumeric(operandType) {
+			return TypeFloat
+		}
 		if operandType == TypeInt {
 			return TypeInt
 		}
@@ -777,7 +827,7 @@ func defaultFuncSigs() map[string]FuncSig {
 		nameReverse: {Params: []Type{TypeArray}, Returns: TypeArray},
 		nameSort:    {Params: []Type{TypeArray}, Returns: TypeArray},
 		nameUnique:  {Params: []Type{TypeArray}, Returns: TypeArray},
-		nameConcat:  {Params: []Type{TypeArray}, Returns: TypeArray, Variadic: true},
+		nameConcat:  {Params: []Type{TypeAny}, Returns: TypeArray, Variadic: true},
 		nameFlatten: {Params: []Type{TypeArray}, Returns: TypeArray},
 
 		// Aggregation

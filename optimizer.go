@@ -14,7 +14,9 @@ type optimizer struct {
 	algebraicSimplify bool
 
 	// Numeric arithmetic policy (must match Engine / VM for fold results)
-	numericMode NumericMode
+	numericMode   NumericMode
+	nonFiniteMode NonFiniteMode
+	nonFiniteFold bool
 
 	// Skip operators that are overloaded and shouldn't be folded
 	skipOperators map[string]bool
@@ -60,6 +62,11 @@ func (o *optimizer) withNumericMode(mode NumericMode) *optimizer {
 	return o
 }
 
+func (o *optimizer) withNonFiniteMode(mode NonFiniteMode) *optimizer {
+	o.nonFiniteMode = mode
+	return o
+}
+
 // withSkipOperators marks multiple operators to skip during optimization.
 func (o *optimizer) withSkipOperators(ops map[string]string) *optimizer {
 	if o.skipOperators == nil {
@@ -78,12 +85,14 @@ func (o *optimizer) optimize(node Node) Node {
 	if node == nil {
 		return nil
 	}
+	original := node
 
 	// Per-call working copy so foldedCount/reducedCount mutations do not race.
 	// skipOperators is a shared map (read-only after Engine.New) — OK.
 	local := *o
 	local.foldedCount = 0
 	local.reducedCount = 0
+	local.nonFiniteFold = false
 
 	// Apply optimizations in multiple passes until no more changes
 	maxPasses := 10 // Limit passes to prevent infinite loops
@@ -113,6 +122,9 @@ func (o *optimizer) optimize(node Node) Node {
 	atomic.AddInt64(&o.foldedCount, local.foldedCount)
 	atomic.AddInt64(&o.reducedCount, local.reducedCount)
 
+	if local.nonFiniteMode == NonFiniteError && local.nonFiniteFold {
+		return original
+	}
 	return node
 }
 
@@ -136,6 +148,7 @@ func (o *optimizer) foldConstants(node Node) Node {
 		if leftIsLit && rightIsLit {
 			result, ok := o.evalBinaryOp(n.Op, leftLit, rightLit)
 			if ok {
+				o.trackFoldResult(result)
 				o.foldedCount++
 				return result
 			}
@@ -150,6 +163,7 @@ func (o *optimizer) foldConstants(node Node) Node {
 		if lit, isLit := o.asLiteral(operand); isLit {
 			result, ok := o.evalUnaryOp(n.Op, lit)
 			if ok {
+				o.trackFoldResult(result)
 				o.foldedCount++
 				return result
 			}
@@ -255,9 +269,10 @@ func (o *optimizer) foldConstants(node Node) Node {
 
 	case *letExpr:
 		return &letExpr{
-			Name:  n.Name,
-			Value: o.foldConstants(n.Value),
-			Body:  o.foldConstants(n.Body),
+			Name:         n.Name,
+			Value:        o.foldConstants(n.Value),
+			Body:         o.foldConstants(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 
 	case *spreadExpr:
@@ -266,10 +281,11 @@ func (o *optimizer) foldConstants(node Node) Node {
 	case *destructureExpr:
 		// Don't fold inside destructure - just optimize value and body
 		return &destructureExpr{
-			Pattern: n.Pattern,
-			IsArray: n.IsArray,
-			Value:   o.foldConstants(n.Value),
-			Body:    o.foldConstants(n.Body),
+			Pattern:      n.Pattern,
+			IsArray:      n.IsArray,
+			Value:        o.foldConstants(n.Value),
+			Body:         o.foldConstants(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 
 	default:
@@ -291,6 +307,16 @@ func (o *optimizer) asLiteral(node Node) (Node, bool) {
 		return node, true
 	default:
 		return nil, false
+	}
+}
+
+func (o *optimizer) trackFoldResult(node Node) {
+	if o.nonFiniteMode != NonFiniteError {
+		return
+	}
+	lit, ok := node.(*floatLit)
+	if ok && (math.IsNaN(lit.Value) || math.IsInf(lit.Value, 0)) {
+		o.nonFiniteFold = true
 	}
 }
 
@@ -691,7 +717,7 @@ func (o *optimizer) evalEq(left, right Node) (Node, bool) {
 		case *intLit:
 			return &boolLit{Value: l.Value == float64(r.Value)}, true
 		case *floatLit:
-			return &boolLit{Value: l.Value == r.Value}, true
+			return &boolLit{Value: math.Float64bits(l.Value) == math.Float64bits(r.Value)}, true
 		}
 	case *stringLit:
 		if r, ok := right.(*stringLit); ok {
@@ -716,62 +742,76 @@ func (o *optimizer) evalNe(left, right Node) (Node, bool) {
 	return nil, false
 }
 
-func (o *optimizer) evalLt(left, right Node) (Node, bool) {
-	switch l := left.(type) {
-	case *intLit:
-		switch r := right.(type) {
-		case *intLit:
-			return &boolLit{Value: l.Value < r.Value}, true
-		case *floatLit:
-			return &boolLit{Value: float64(l.Value) < r.Value}, true
-		}
-	case *floatLit:
-		switch r := right.(type) {
-		case *intLit:
-			return &boolLit{Value: l.Value < float64(r.Value)}, true
-		case *floatLit:
-			return &boolLit{Value: l.Value < r.Value}, true
-		}
-	case *stringLit:
-		if r, ok := right.(*stringLit); ok {
-			return &boolLit{Value: l.Value < r.Value}, true
+func compareLiteralNodes(left, right Node) (int, bool) {
+	if l, ok := left.(*intLit); ok {
+		if r, ok := right.(*intLit); ok {
+			switch {
+			case l.Value < r.Value:
+				return -1, true
+			case l.Value > r.Value:
+				return 1, true
+			default:
+				return 0, true
+			}
 		}
 	}
-	return nil, false
+	lf, lok := numericLitFloat(left)
+	rf, rok := numericLitFloat(right)
+	if lok && rok {
+		switch {
+		case lf < rf:
+			return -1, true
+		case lf > rf:
+			return 1, true
+		default:
+			return 0, true
+		}
+	}
+	if l, ok := left.(*stringLit); ok {
+		if r, ok := right.(*stringLit); ok {
+			switch {
+			case l.Value < r.Value:
+				return -1, true
+			case l.Value > r.Value:
+				return 1, true
+			default:
+				return 0, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func (o *optimizer) evalLt(left, right Node) (Node, bool) {
+	cmp, ok := compareLiteralNodes(left, right)
+	if !ok {
+		return nil, false
+	}
+	return &boolLit{Value: cmp < 0}, true
 }
 
 func (o *optimizer) evalLe(left, right Node) (Node, bool) {
-	switch l := left.(type) {
-	case *intLit:
-		switch r := right.(type) {
-		case *intLit:
-			return &boolLit{Value: l.Value <= r.Value}, true
-		case *floatLit:
-			return &boolLit{Value: float64(l.Value) <= r.Value}, true
-		}
-	case *floatLit:
-		switch r := right.(type) {
-		case *intLit:
-			return &boolLit{Value: l.Value <= float64(r.Value)}, true
-		case *floatLit:
-			return &boolLit{Value: l.Value <= r.Value}, true
-		}
-	case *stringLit:
-		if r, ok := right.(*stringLit); ok {
-			return &boolLit{Value: l.Value <= r.Value}, true
-		}
+	cmp, ok := compareLiteralNodes(left, right)
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	return &boolLit{Value: cmp <= 0}, true
 }
 
 func (o *optimizer) evalGt(left, right Node) (Node, bool) {
-	// a > b is equivalent to b < a
-	return o.evalLt(right, left)
+	cmp, ok := compareLiteralNodes(left, right)
+	if !ok {
+		return nil, false
+	}
+	return &boolLit{Value: cmp > 0}, true
 }
 
 func (o *optimizer) evalGe(left, right Node) (Node, bool) {
-	// a >= b is equivalent to b <= a
-	return o.evalLe(right, left)
+	cmp, ok := compareLiteralNodes(left, right)
+	if !ok {
+		return nil, false
+	}
+	return &boolLit{Value: cmp >= 0}, true
 }
 
 func (o *optimizer) evalAnd(left, right Node) (Node, bool) {
@@ -872,16 +912,12 @@ func (o *optimizer) reduceStrength(node Node) Node {
 				o.reducedCount++
 				return &binaryExpr{Op: "*", Left: left, Right: left}
 			}
-			// x ** 1 -> x only for numeric x (pow coerces via Float)
-			if r, ok := right.(*intLit); ok && r.Value == 1 && o.isDefinitelyNumeric(left) {
+			// x ** 1 -> x only when the arithmetic mode preserves the operand type.
+			if r, ok := right.(*intLit); ok && r.Value == 1 && o.numericMode == NumericDefault && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return left
 			}
-			// x ** 0 -> 1 only for numeric x
-			if r, ok := right.(*intLit); ok && r.Value == 0 && o.isDefinitelyNumeric(left) {
-				o.reducedCount++
-				return o.numericOneLit()
-			}
+
 		case "*":
 			// x * 2 -> x + x only for numeric x (string repeat / array would diverge)
 			if r, ok := right.(*intLit); ok && r.Value == 2 && o.isSimple(left) && o.isDefinitelyNumeric(left) {
@@ -965,9 +1001,10 @@ func (o *optimizer) reduceStrength(node Node) Node {
 
 	case *letExpr:
 		return &letExpr{
-			Name:  n.Name,
-			Value: o.reduceStrength(n.Value),
-			Body:  o.reduceStrength(n.Body),
+			Name:         n.Name,
+			Value:        o.reduceStrength(n.Value),
+			Body:         o.reduceStrength(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 
 	case *spreadExpr:
@@ -975,10 +1012,11 @@ func (o *optimizer) reduceStrength(node Node) Node {
 
 	case *destructureExpr:
 		return &destructureExpr{
-			Pattern: n.Pattern,
-			IsArray: n.IsArray,
-			Value:   o.reduceStrength(n.Value),
-			Body:    o.reduceStrength(n.Body),
+			Pattern:      n.Pattern,
+			IsArray:      n.IsArray,
+			Value:        o.reduceStrength(n.Value),
+			Body:         o.reduceStrength(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 
 	default:
@@ -1012,66 +1050,41 @@ func (o *optimizer) simplifyAlgebra(node Node) Node {
 		case "+":
 			// + is also string/array concat — only fold additive identity on
 			// operands that are definitely numeric.
-			// x + 0 -> x
-			if o.isZero(right) && o.isDefinitelyNumeric(left) {
+			// x + 0 -> x only when the arithmetic mode preserves the operand type.
+			if o.numericMode == NumericDefault && o.isZero(right) && o.isDefinitelyNumeric(left) && identityPreservesNumericType(left, right) {
 				o.reducedCount++
 				return left
 			}
-			// 0 + x -> x
-			if o.isZero(left) && o.isDefinitelyNumeric(right) {
+			// 0 + x -> x under the same type-preservation rule.
+			if o.numericMode == NumericDefault && o.isZero(left) && o.isDefinitelyNumeric(right) && identityPreservesNumericType(right, left) {
 				o.reducedCount++
 				return right
 			}
 		case "-":
-			// x - 0 -> x
-			if o.isZero(right) && o.isDefinitelyNumeric(left) {
+			// x - 0 -> x only when the arithmetic mode preserves the operand type.
+			if o.numericMode == NumericDefault && o.isZero(right) && o.isDefinitelyNumeric(left) && identityPreservesNumericType(left, right) {
 				o.reducedCount++
 				return left
-			}
-			// x - x -> 0 (only for simple expressions)
-			if o.nodesEqual(left, right) && o.isSideEffectFree(left) && o.isDefinitelyNumeric(left) {
-				o.reducedCount++
-				return o.numericZeroLit()
 			}
 		case "*":
-			// x * 1 -> x (safe for string repeat and numbers)
-			if r, ok := right.(*intLit); ok && r.Value == 1 {
-				o.reducedCount++
-				return left
+			// x * 1 -> x for numeric values and string repetition.
+			if r, ok := right.(*intLit); ok && r.Value == 1 && o.numericMode == NumericDefault {
+				_, stringOperand := left.(*stringLit)
+				if o.isDefinitelyNumeric(left) || stringOperand {
+					o.reducedCount++
+					return left
+				}
 			}
-			if r, ok := right.(*floatLit); ok && r.Value == 1 {
-				o.reducedCount++
-				return left
-			}
-			// 1 * x -> x only when x is numeric (1*"ab" is not string-repeat)
-			if o.isOne(left) && o.isDefinitelyNumeric(right) {
+			// 1 * x -> x only for numeric x and a type-preserving mode.
+			if o.numericMode == NumericDefault && o.isOne(left) && o.isDefinitelyNumeric(right) && identityPreservesNumericType(right, left) {
 				o.reducedCount++
 				return right
 			}
-			// x * 0 -> 0 only for numeric x ("ab"*0 yields "")
-			if o.isZero(right) && o.isSideEffectFree(left) && o.isDefinitelyNumeric(left) {
-				o.reducedCount++
-				return o.numericZeroLit()
-			}
-			// 0 * x -> 0 only for numeric x (0*"ab" is a runtime error)
-			if o.isZero(left) && o.isSideEffectFree(right) && o.isDefinitelyNumeric(right) {
-				o.reducedCount++
-				return o.numericZeroLit()
-			}
 		case "/":
-			// x / 1 -> x
-			if r, ok := right.(*intLit); ok && r.Value == 1 && o.isDefinitelyNumeric(left) {
+			// x / 1 -> x only for default-mode numeric division.
+			if r, ok := right.(*intLit); ok && r.Value == 1 && o.numericMode == NumericDefault && o.isDefinitelyNumeric(left) {
 				o.reducedCount++
 				return left
-			}
-			if r, ok := right.(*floatLit); ok && r.Value == 1 && o.isDefinitelyNumeric(left) {
-				o.reducedCount++
-				return left
-			}
-			// x / x -> 1 (only for simple, non-zero expressions)
-			if o.nodesEqual(left, right) && o.isSideEffectFree(left) && !o.isZero(left) && o.isDefinitelyNumeric(left) {
-				o.reducedCount++
-				return o.numericOneLit()
 			}
 		case "&&":
 			// Semicolon-style short-circuit: return an operand (not a coerced bool).
@@ -1121,23 +1134,6 @@ func (o *optimizer) simplifyAlgebra(node Node) Node {
 			}
 		}
 
-		// --x -> x only for numeric x
-		if n.Op == "-" {
-			if inner, ok := operand.(*unaryExpr); ok && inner.Op == "-" && o.isDefinitelyNumeric(inner.Operand) {
-				o.reducedCount++
-				return inner.Operand
-			}
-		}
-
-		// ~~x -> x only for integer x. Bitwise ~ always goes through Int(), so
-		// ~~0.1 → 0 at runtime — cancelling would wrongly yield 0.1.
-		if n.Op == "~" {
-			if inner, ok := operand.(*unaryExpr); ok && inner.Op == "~" && o.isDefinitelyInt(inner.Operand) {
-				o.reducedCount++
-				return inner.Operand
-			}
-		}
-
 		return &unaryExpr{Op: n.Op, Operand: operand}
 
 	case *ternaryExpr:
@@ -1178,9 +1174,10 @@ func (o *optimizer) simplifyAlgebra(node Node) Node {
 
 	case *letExpr:
 		return &letExpr{
-			Name:  n.Name,
-			Value: o.simplifyAlgebra(n.Value),
-			Body:  o.simplifyAlgebra(n.Body),
+			Name:         n.Name,
+			Value:        o.simplifyAlgebra(n.Value),
+			Body:         o.simplifyAlgebra(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 
 	case *spreadExpr:
@@ -1188,15 +1185,24 @@ func (o *optimizer) simplifyAlgebra(node Node) Node {
 
 	case *destructureExpr:
 		return &destructureExpr{
-			Pattern: n.Pattern,
-			IsArray: n.IsArray,
-			Value:   o.simplifyAlgebra(n.Value),
-			Body:    o.simplifyAlgebra(n.Body),
+			Pattern:      n.Pattern,
+			IsArray:      n.IsArray,
+			Value:        o.simplifyAlgebra(n.Value),
+			Body:         o.simplifyAlgebra(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 
 	default:
 		return node
 	}
+}
+
+func identityPreservesNumericType(result, other Node) bool {
+	if _, ok := result.(*floatLit); ok {
+		return true
+	}
+	_, otherFloat := other.(*floatLit)
+	return !otherFloat
 }
 
 // isZero checks if a node represents zero.
@@ -1208,22 +1214,6 @@ func (o *optimizer) isZero(node Node) bool {
 		return true
 	}
 	return false
-}
-
-// numericZeroLit returns 0 as int or float lit matching NumericMode.
-func (o *optimizer) numericZeroLit() Node {
-	if o.numericMode == NumericFloat64 {
-		return &floatLit{Value: 0}
-	}
-	return &intLit{Value: 0}
-}
-
-// numericOneLit returns 1 as int or float lit matching NumericMode.
-func (o *optimizer) numericOneLit() Node {
-	if o.numericMode == NumericFloat64 {
-		return &floatLit{Value: 1}
-	}
-	return &intLit{Value: 1}
 }
 
 // isOne reports whether node is the numeric literal 1.
@@ -1258,102 +1248,6 @@ func (o *optimizer) isDefinitelyNumeric(node Node) bool {
 		}
 	}
 	return false
-}
-
-// isDefinitelyInt reports whether node can only evaluate to an int64.
-// Required for ~~x → x (bitwise ~ always uses Int() coercion).
-func (o *optimizer) isDefinitelyInt(node Node) bool {
-	switch n := node.(type) {
-	case *intLit:
-		return true
-	case *unaryExpr:
-		switch n.Op {
-		case "-", "+", "~":
-			return o.isDefinitelyInt(n.Operand)
-		}
-	case *binaryExpr:
-		switch n.Op {
-		case "-", "*", "%", "&", "|", "^", "<<", ">>":
-			return o.isDefinitelyInt(n.Left) && o.isDefinitelyInt(n.Right)
-		case "+":
-			return o.isDefinitelyInt(n.Left) && o.isDefinitelyInt(n.Right)
-		}
-	}
-	return false
-}
-
-// nodesEqual checks if two nodes are structurally equal.
-func (o *optimizer) nodesEqual(a, b Node) bool {
-	switch na := a.(type) {
-	case *ident:
-		if nb, ok := b.(*ident); ok {
-			return na.Name == nb.Name
-		}
-	case *intLit:
-		if nb, ok := b.(*intLit); ok {
-			return na.Value == nb.Value
-		}
-	case *floatLit:
-		if nb, ok := b.(*floatLit); ok {
-			return na.Value == nb.Value
-		}
-	case *stringLit:
-		if nb, ok := b.(*stringLit); ok {
-			return na.Value == nb.Value
-		}
-	case *boolLit:
-		if nb, ok := b.(*boolLit); ok {
-			return na.Value == nb.Value
-		}
-	case *nilLit:
-		_, ok := b.(*nilLit)
-		return ok
-	}
-	return false
-}
-
-// isSideEffectFree checks if an expression has no side effects.
-func isSideEffectFree(node Node) bool {
-	o := &optimizer{}
-	return o.isSideEffectFree(node)
-}
-
-// isSideEffectFree checks if an expression has no side effects.
-func (o *optimizer) isSideEffectFree(node Node) bool {
-	switch n := node.(type) {
-	case *intLit, *floatLit, *stringLit, *boolLit, *nilLit, *ident:
-		return true
-	case *binaryExpr:
-		return o.isSideEffectFree(n.Left) && o.isSideEffectFree(n.Right)
-	case *unaryExpr:
-		return o.isSideEffectFree(n.Operand)
-	case *memberExpr:
-		return o.isSideEffectFree(n.Object) && o.isSideEffectFree(n.Property)
-	case *indexExpr:
-		return o.isSideEffectFree(n.Object) && o.isSideEffectFree(n.Index)
-	case *ternaryExpr:
-		return o.isSideEffectFree(n.Cond) && o.isSideEffectFree(n.Then) && o.isSideEffectFree(n.Else)
-	case *arrayLit:
-		for _, elem := range n.Elements {
-			if !o.isSideEffectFree(elem) {
-				return false
-			}
-		}
-		return true
-	case *mapLit:
-		for i := range n.Keys {
-			if !o.isSideEffectFree(n.Keys[i]) || !o.isSideEffectFree(n.Values[i]) {
-				return false
-			}
-		}
-		return true
-	case *callExpr:
-		// Function calls may have side effects
-		return false
-	default:
-		// Assume expressions have side effects to be safe
-		return false
-	}
 }
 
 // eliminateDeadCode removes unreachable or useless code.
@@ -1457,9 +1351,10 @@ func (o *optimizer) eliminateDeadCode(node Node) Node {
 
 	case *letExpr:
 		return &letExpr{
-			Name:  n.Name,
-			Value: o.eliminateDeadCode(n.Value),
-			Body:  o.eliminateDeadCode(n.Body),
+			Name:         n.Name,
+			Value:        o.eliminateDeadCode(n.Value),
+			Body:         o.eliminateDeadCode(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 
 	case *spreadExpr:
@@ -1467,10 +1362,11 @@ func (o *optimizer) eliminateDeadCode(node Node) Node {
 
 	case *destructureExpr:
 		return &destructureExpr{
-			Pattern: n.Pattern,
-			IsArray: n.IsArray,
-			Value:   o.eliminateDeadCode(n.Value),
-			Body:    o.eliminateDeadCode(n.Body),
+			Pattern:      n.Pattern,
+			IsArray:      n.IsArray,
+			Value:        o.eliminateDeadCode(n.Value),
+			Body:         o.eliminateDeadCode(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 
 	default:

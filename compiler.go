@@ -16,11 +16,13 @@ const (
 	opDup         // Duplicate top of stack
 
 	// Load/Store
-	opLoadVar   // Load variable by name
-	opLoadEnv   // Load from environment by index
-	opLoadConst // Load constant by index
-	opStoreVar  // Store variable by name
-	opDeleteVar // Delete variable by name (for cleanup)
+	opLoadVar    // Load variable by name
+	opLoadEnv    // Load from environment by index
+	opLoadConst  // Load constant by index
+	opStoreVar   // Store variable by name
+	opDeleteVar  // Delete variable by name (for cleanup)
+	opSaveVar    // Save variable binding for lexical scope restoration
+	opRestoreVar // Restore the most recently saved binding
 
 	// Arithmetic
 	opAdd // +
@@ -474,15 +476,22 @@ func (c *compiler) compile(node Node) error {
 		c.emit(opLambda, idx)
 
 	case *letExpr:
+		c.emitName(opSaveVar, n.Name)
 		if err := c.compile(n.Value); err != nil {
 			return err
 		}
 		c.emitName(opStoreVar, n.Name)
-		if err := c.compile(n.Body); err != nil {
-			return err
+		if !n.ImplicitBody {
+			if err := c.compile(n.Body); err != nil {
+				return err
+			}
 		}
+		c.emitName(opRestoreVar, n.Name)
 
 	case *destructureExpr:
+		for _, field := range n.Pattern {
+			c.emitName(opSaveVar, field.Name)
+		}
 		// Compile the source value
 		if err := c.compile(n.Value); err != nil {
 			return err
@@ -527,9 +536,14 @@ func (c *compiler) compile(node Node) error {
 		// Cleanup: delete the temp variable to avoid polluting the environment
 		c.emitName(opDeleteVar, tempVar)
 
-		// Compile the body
-		if err := c.compile(n.Body); err != nil {
-			return err
+		// Without an explicit body, the stored source remains the result.
+		if !n.ImplicitBody {
+			if err := c.compile(n.Body); err != nil {
+				return err
+			}
+		}
+		for i := len(n.Pattern) - 1; i >= 0; i-- {
+			c.emitName(opRestoreVar, n.Pattern[i].Name)
 		}
 
 	default:

@@ -41,20 +41,26 @@ func structToMap(rv reflect.Value) map[string]any {
 
 	for i := 0; i < rv.NumField(); i++ {
 		field := rt.Field(i)
-		if !field.IsExported() {
+		name, ok := envFieldName(field)
+		if !ok {
 			continue
 		}
-
-		name := field.Tag.Get("expr")
-		if name == "" {
-			name = field.Name
-		}
-		if name == "-" {
-			continue
-		}
-
 		m[name] = rv.Field(i).Interface()
 	}
 
 	return m
+}
+
+func envFieldName(field reflect.StructField) (string, bool) {
+	if !field.IsExported() {
+		return "", false
+	}
+	name := field.Tag.Get("expr")
+	if name == "-" {
+		return "", false
+	}
+	if name == "" {
+		name = field.Name
+	}
+	return name, true
 }

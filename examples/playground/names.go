@@ -8,6 +8,8 @@ const (
 	catMath             = "Math"
 	catString           = "String"
 	catType             = "Type"
+	catTime             = "Time"
+	catQuality          = "Quality"
 	catUtility          = "Utility"
 	descComplex         = "Complex"
 	descEmptyArray      = "Empty array"

@@ -2,7 +2,6 @@ package hyperex
 
 import (
 	"fmt"
-	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -163,6 +162,10 @@ func mergeBuiltinMaps(dst map[string]Value, extras ...map[string]Value) map[stri
 	return dst
 }
 
+func stableKeyText(tag, text string) string {
+	return tag + strconv.Itoa(len(text)) + ":" + text
+}
+
 // stableValueKey builds a deterministic, cycle-safe key for values (used by unique()).
 // It is sandbox-aware: long traversals account ops via sandboxLoopCheck.
 func stableValueKey(vm *execVM, v Value, depth int, seen map[uintptr]bool) (string, error) {
@@ -178,9 +181,9 @@ func stableValueKey(vm *execVM, v Value, depth int, seen map[uintptr]bool) (stri
 		}
 		return litFalse, nil
 	case kindInt:
-		return strconv.FormatInt(int64(v.bits), 10), nil
+		return "i" + strconv.FormatInt(int64(v.bits), 10) + ";", nil
 	case kindFloat:
-		return strconv.FormatFloat(math.Float64frombits(v.bits), 'g', -1, 64), nil
+		return "f" + strconv.FormatUint(v.bits, 16) + ";", nil
 	case kindTime:
 		return "t:" + strconv.FormatInt(int64(v.bits), 10), nil
 	case kindDuration:
@@ -193,7 +196,7 @@ func stableValueKey(vm *execVM, v Value, depth int, seen map[uintptr]bool) (stri
 				return "", err
 			}
 		}
-		return "s:" + s, nil
+		return stableKeyText("s", s), nil
 	case kindArray:
 		arr := v.ptr.([]any)
 		rv := reflect.ValueOf(arr)
@@ -255,8 +258,7 @@ func stableValueKey(vm *execVM, v Value, depth int, seen map[uintptr]bool) (stri
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			b.WriteString(k)
-			b.WriteByte(':')
+			b.WriteString(stableKeyText("k", k))
 			s, err := stableValueKey(vm, NewValue(m[k]), depth+1, seen)
 			if err != nil {
 				return "", err
@@ -274,78 +276,8 @@ func stableValueKey(vm *execVM, v Value, depth int, seen map[uintptr]bool) (stri
 				return "", err
 			}
 		}
-		return "x:" + s, nil
+		return stableKeyText("x", s), nil
 	}
-}
-
-func callBuiltinFunc(vm *execVM, fn Value, args []Value) (Value, error) {
-	if fn.kind != kindFunc {
-		return Nil, ErrNotCallable
-	}
-
-	// Check if it's a closure (lambda)
-	if closure, ok := fn.ptr.(*closure); ok {
-		return callClosureFromBuiltin(closure, args)
-	}
-
-	// Check if it's a builtinFunc
-	if bf, ok := fn.ptr.(*builtinFunc); ok {
-		return bf.fn(vm, args)
-	}
-
-	// Native Go function - use reflection
-	return callNativeFromBuiltin(fn.ptr, args)
-}
-
-// callClosureFromBuiltin executes a closure without requiring a full vm context
-func callClosureFromBuiltin(closure *closure, args []Value) (Value, error) {
-	// Use closure's builtins (includes custom functions) if available, otherwise default
-	builtins := closure.builtins
-	if builtins == nil {
-		builtins = defaultBuiltins()
-	}
-
-	// Create vm with sandbox limits if closure has them
-	var vm *execVM
-	if closure.limits != nil {
-		vm = newVMWithLimits(closure.code, builtins, closure.limits)
-	} else {
-		vm = newVM(closure.code, builtins)
-	}
-
-	// Inherit strict mode and numeric/non-finite policy from the closure's originating vm
-	vm.strictMode = closure.strictMode
-	vm.numericMode = closure.numericMode
-	vm.nonFiniteMode = closure.nonFiniteMode
-
-	// Inherit maxDepth from the closure's originating vm when available.
-	// If not set, fall back to a safe default to prevent infinite recursion.
-	if closure.maxDepth > 0 {
-		vm.maxDepth = closure.maxDepth
-	} else if vm.maxDepth == 0 {
-		vm.maxDepth = defaultMaxCallDepth
-	}
-	defer releaseVM(vm)
-
-	// Copy closure environment
-	for k, v := range closure.env {
-		vm.env[k] = v
-	}
-
-	// Bind arguments by position and by name
-	for i, arg := range args {
-		vm.env[fmt.Sprintf("$%d", i)] = arg
-		if i < len(closure.params) {
-			vm.env[closure.params[i]] = arg
-		}
-	}
-
-	// Special: first argument is also available as "#"
-	if len(args) > 0 {
-		vm.env["#"] = args[0]
-	}
-
-	return vm.execute()
 }
 
 // callNativeFromBuiltin calls a native Go function

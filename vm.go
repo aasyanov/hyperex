@@ -22,9 +22,14 @@ const (
 	vmValueBaseBytes         = 32 // approximate sizeof(Value) for memory estimates
 )
 
+type savedVariable struct {
+	name    string
+	value   Value
+	existed bool
+}
+
 // vm executes compiled bytecode.
-// Field order packs ints/pointers first; strictMode bool last to avoid mid-struct pad
-// before numericMode/nonFiniteMode (amd64 Sizeof still 144 with trailing align).
+// Field order packs ints/pointers first; strictMode bool last to avoid mid-struct pad.
 type execVM struct {
 	code      *bytecode
 	stack     []Value
@@ -39,6 +44,7 @@ type execVM struct {
 	// Sandbox support
 	limits   *sandboxLimits
 	opsCount int64
+	saved    []savedVariable
 
 	// Numeric arithmetic policy (NumericDefault / NumericFloat64)
 	numericMode NumericMode
@@ -167,6 +173,7 @@ func newVM(code *bytecode, builtins map[string]Value) *execVM {
 	vm.builtins = builtins
 	vm.limits = nil
 	vm.opsCount = 0
+	vm.saved = vm.saved[:0]
 	vm.ctx = nil
 	vm.strictMode = false
 	vm.numericMode = NumericDefault
@@ -203,6 +210,10 @@ func releaseVM(vm *execVM) {
 	vm.numericMode = NumericDefault
 	vm.nonFiniteMode = NonFiniteAllow
 	vm.ctx = nil
+	for i := range vm.saved {
+		vm.saved[i].value = Nil
+	}
+	vm.saved = vm.saved[:0]
 	// Clear stack to release references to large objects (prevent memory leak)
 	// Use maxSP because sp at the end can be 0 even if large temporaries were pushed/popped.
 	for i := 0; i < vm.maxSP; i++ {
@@ -265,11 +276,47 @@ func (vm *execVM) sandboxCoerceEnvValue(v any, depth int) (Value, error) {
 	}
 	switch x := v.(type) {
 	case Value:
-		// If caller manually passes Value, still enforce that it doesn't contain external Go objects.
 		if x.kind == kindAny || x.kind == kindFunc {
 			return Nil, sandboxDeny("environment Value contains disallowed type in secure mode")
 		}
-		return x, nil
+		switch x.kind {
+		case kindArray:
+			arr := x.Array()
+			out := make([]any, len(arr))
+			for i, elem := range arr {
+				ev, err := vm.sandboxCoerceEnvValue(elem, depth+1)
+				if err != nil {
+					return Nil, err
+				}
+				out[i] = ev.Interface()
+				if i&sandboxCheckMask == 0 {
+					if err := vm.checkLimits(); err != nil {
+						return Nil, err
+					}
+				}
+			}
+			return Array(out), nil
+		case kindMap:
+			m := x.Map()
+			out := make(map[string]any, len(m))
+			i := 0
+			for k, elem := range m {
+				ev, err := vm.sandboxCoerceEnvValue(elem, depth+1)
+				if err != nil {
+					return Nil, err
+				}
+				out[k] = ev.Interface()
+				i++
+				if i&sandboxCheckMask == 0 {
+					if err := vm.checkLimits(); err != nil {
+						return Nil, err
+					}
+				}
+			}
+			return Map(out), nil
+		default:
+			return x, nil
+		}
 	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, string:
 		return NewValue(x), nil
 	case time.Time:
@@ -368,6 +415,10 @@ func (vm *execVM) sandboxCoerceEnvValue(v any, depth int) (Value, error) {
 }
 
 func (vm *execVM) execute() (Value, error) {
+	if err := vm.checkContext(); err != nil {
+		return Nil, err
+	}
+
 	code := vm.code.Instructions
 	constants := vm.code.Constants
 
@@ -466,6 +517,23 @@ func (vm *execVM) execute() (Value, error) {
 			// Delete variable from environment (used for temp variable cleanup)
 			name := inst.Name
 			delete(vm.env, name)
+
+		case opSaveVar:
+			name := inst.Name
+			old, existed := vm.env[name]
+			vm.saved = append(vm.saved, savedVariable{name: name, value: old, existed: existed})
+
+		case opRestoreVar:
+			if len(vm.saved) == 0 {
+				return Nil, &RuntimeError{Message: "lexical scope restore without saved binding"}
+			}
+			last := vm.saved[len(vm.saved)-1]
+			vm.saved = vm.saved[:len(vm.saved)-1]
+			if last.existed {
+				vm.env[last.name] = last.value
+			} else {
+				delete(vm.env, last.name)
+			}
 
 		case opAdd:
 			right := vm.pop()
@@ -792,6 +860,9 @@ func (vm *execVM) execute() (Value, error) {
 			arr := make([]any, 0, rangeSize)
 			// Use a counted loop to avoid int64 overflow when endInt == MaxInt64 (i++ would wrap).
 			for k := int64(0); k < rangeSize; k++ {
+				if err := vm.sandboxLoopCheck(int(k)); err != nil {
+					return Nil, err
+				}
 				arr = append(arr, startInt+k)
 			}
 			vm.push(Array(arr))
@@ -1818,6 +1889,9 @@ func (vm *execVM) call(fn Value, args []Value) (Value, error) {
 			if err != nil {
 				return Nil, err
 			}
+			if err := vm.checkContext(); err != nil {
+				return Nil, err
+			}
 			if err := vm.rejectNonFinite(out); err != nil {
 				return Nil, err
 			}
@@ -1834,6 +1908,9 @@ func (vm *execVM) call(fn Value, args []Value) (Value, error) {
 		// Native Go function
 		out, err := vm.callNative(fn.ptr, args)
 		if err != nil {
+			return Nil, err
+		}
+		if err := vm.checkContext(); err != nil {
 			return Nil, err
 		}
 		if err := vm.rejectNonFinite(out); err != nil {
@@ -2122,6 +2199,14 @@ func (vm *execVM) checkLimits() error {
 			estimatedMemory += vm.estimateValueMemory(v)
 			if estimatedMemory > limits.maxMemory {
 				break
+			}
+		}
+		if estimatedMemory <= limits.maxMemory {
+			for _, saved := range vm.saved {
+				estimatedMemory += vm.estimateValueMemory(saved.value)
+				if estimatedMemory > limits.maxMemory {
+					break
+				}
 			}
 		}
 		if estimatedMemory > limits.maxMemory {

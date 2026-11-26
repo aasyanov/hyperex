@@ -2,6 +2,8 @@ package hyperex
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -10,8 +12,8 @@ import (
 //
 // Example:
 //
-//	simplified, _ := hyperex.Simplify("x * 2 + 0")
-//	// simplified = "x * 2"
+//	simplified, _ := hyperex.Simplify("x * 1")
+//	// simplified = "x"
 //
 //	simplified, _ := hyperex.Simplify("2 + 3 * 4")
 //	// simplified = "14"
@@ -26,6 +28,7 @@ func Simplify(expr string) (string, error) {
 		constantFolding:   true,
 		strengthReduction: true,
 		algebraicSimplify: true,
+		nonFiniteMode:     NonFiniteError,
 	}
 
 	optimized := optimizer.optimize(ast)
@@ -60,22 +63,115 @@ func Expand(expr string, macros map[string]string) (string, error) {
 		parsedMacros[name] = macroAST
 	}
 
-	// Transform AST, replacing identifiers with macro definitions
-	// Use copyNode to avoid sharing AST nodes between multiple macro expansions
-	expanded := Transform(ast, func(n Node) Node {
-		if ident, ok := n.(*ident); ok {
-			if replacement, exists := parsedMacros[ident.Name]; exists {
+	expanded := expandMacroExprs(ast, parsedMacros, make(map[string]bool))
+	return ASTToString(expanded), nil
+}
+
+func expandMacroExprs(node Node, macros map[string]Node, bound map[string]bool) Node {
+	switch n := node.(type) {
+	case *ident:
+		if !bound[n.Name] {
+			if replacement, ok := macros[n.Name]; ok {
 				return copyNode(replacement)
 			}
 		}
 		return n
-	})
-
-	return ASTToString(expanded), nil
+	case *binaryExpr:
+		return &binaryExpr{Op: n.Op, Left: expandMacroExprs(n.Left, macros, bound), Right: expandMacroExprs(n.Right, macros, bound)}
+	case *unaryExpr:
+		return &unaryExpr{Op: n.Op, Operand: expandMacroExprs(n.Operand, macros, bound)}
+	case *ternaryExpr:
+		return &ternaryExpr{Cond: expandMacroExprs(n.Cond, macros, bound), Then: expandMacroExprs(n.Then, macros, bound), Else: expandMacroExprs(n.Else, macros, bound)}
+	case *coalesceExpr:
+		return &coalesceExpr{Left: expandMacroExprs(n.Left, macros, bound), Right: expandMacroExprs(n.Right, macros, bound)}
+	case *callExpr:
+		args := make([]Node, len(n.Args))
+		for i, arg := range n.Args {
+			args[i] = expandMacroExprs(arg, macros, bound)
+		}
+		return &callExpr{Func: expandMacroExprs(n.Func, macros, bound), Args: args}
+	case *memberExpr:
+		property := n.Property
+		if n.Computed {
+			property = expandMacroExprs(property, macros, bound)
+		}
+		return &memberExpr{Object: expandMacroExprs(n.Object, macros, bound), Property: property, Computed: n.Computed, Optional: n.Optional}
+	case *indexExpr:
+		return &indexExpr{Object: expandMacroExprs(n.Object, macros, bound), Index: expandMacroExprs(n.Index, macros, bound), Optional: n.Optional}
+	case *sliceExpr:
+		return &sliceExpr{
+			Object: expandMacroExprs(n.Object, macros, bound),
+			Low:    expandMacroExprs(n.Low, macros, bound),
+			High:   expandMacroExprs(n.High, macros, bound),
+			Step:   expandMacroExprs(n.Step, macros, bound),
+		}
+	case *arrayLit:
+		elements := make([]Node, len(n.Elements))
+		for i, elem := range n.Elements {
+			elements[i] = expandMacroExprs(elem, macros, bound)
+		}
+		return &arrayLit{Elements: elements}
+	case *mapLit:
+		keys := make([]Node, len(n.Keys))
+		values := make([]Node, len(n.Values))
+		for i := range n.Keys {
+			keys[i] = expandMacroExprs(n.Keys[i], macros, bound)
+			values[i] = expandMacroExprs(n.Values[i], macros, bound)
+		}
+		return &mapLit{Keys: keys, Values: values}
+	case *rangeExpr:
+		return &rangeExpr{Start: expandMacroExprs(n.Start, macros, bound), End: expandMacroExprs(n.End, macros, bound)}
+	case *pipeExpr:
+		return &pipeExpr{Left: expandMacroExprs(n.Left, macros, bound), Right: expandMacroExprs(n.Right, macros, bound)}
+	case *lambdaExpr:
+		lambdaBound := copyNameSet(bound)
+		for _, param := range n.Params {
+			lambdaBound[param] = true
+		}
+		return &lambdaExpr{Params: n.Params, Body: expandMacroExprs(n.Body, macros, lambdaBound)}
+	case *letExpr:
+		letBound := copyNameSet(bound)
+		letBound[n.Name] = true
+		return &letExpr{
+			Name:         n.Name,
+			Value:        expandMacroExprs(n.Value, macros, bound),
+			Body:         expandMacroExprs(n.Body, macros, letBound),
+			ImplicitBody: n.ImplicitBody,
+		}
+	case *spreadExpr:
+		return &spreadExpr{Expr: expandMacroExprs(n.Expr, macros, bound)}
+	case *destructureExpr:
+		pattern := make([]destructureField, len(n.Pattern))
+		bodyBound := copyNameSet(bound)
+		for i, field := range n.Pattern {
+			pattern[i] = field
+			if field.Default != nil {
+				pattern[i].Default = expandMacroExprs(field.Default, macros, bound)
+			}
+			bodyBound[field.Name] = true
+		}
+		return &destructureExpr{
+			Pattern:      pattern,
+			IsArray:      n.IsArray,
+			Value:        expandMacroExprs(n.Value, macros, bound),
+			Body:         expandMacroExprs(n.Body, macros, bodyBound),
+			ImplicitBody: n.ImplicitBody,
+		}
+	default:
+		return node
+	}
 }
 
-// Inline expands let expressions by substituting variable references.
-// This can make expressions longer but removes variable bindings.
+func copyNameSet(src map[string]bool) map[string]bool {
+	dst := make(map[string]bool, len(src))
+	for name := range src {
+		dst[name] = true
+	}
+	return dst
+}
+
+// Inline expands closed literal let bindings by substituting variable references.
+// Other bindings are preserved to avoid duplicated effects, capture, and removed errors.
 //
 // Example:
 //
@@ -96,12 +192,19 @@ func Inline(expr string) (string, error) {
 func inlineLetExprs(node Node, bindings map[string]Node) Node {
 	switch n := node.(type) {
 	case *letExpr:
-		// Inline the value first
 		value := inlineLetExprs(n.Value, bindings)
-		// Add to bindings
+		if !isClosedLiteralValue(value) {
+			bodyBindings := copyBindings(bindings)
+			delete(bodyBindings, n.Name)
+			return &letExpr{
+				Name:         n.Name,
+				Value:        value,
+				Body:         inlineLetExprs(n.Body, bodyBindings),
+				ImplicitBody: n.ImplicitBody,
+			}
+		}
 		newBindings := copyBindings(bindings)
 		newBindings[n.Name] = value
-		// Inline the body with new bindings
 		return inlineLetExprs(n.Body, newBindings)
 
 	case *ident:
@@ -197,22 +300,28 @@ func inlineLetExprs(node Node, bindings map[string]Node) Node {
 			}
 		}
 
-		// Inline the body with current bindings (destructure vars shadow any existing)
+		// Destructured names shadow outer bindings in the body.
+		for _, field := range n.Pattern {
+			delete(newBindings, field.Name)
+		}
 		body := inlineLetExprs(n.Body, newBindings)
 
 		return &destructureExpr{
-			Pattern: newPattern,
-			IsArray: n.IsArray,
-			Value:   value,
-			Body:    body,
+			Pattern:      newPattern,
+			IsArray:      n.IsArray,
+			Value:        value,
+			Body:         body,
+			ImplicitBody: n.ImplicitBody,
 		}
 
 	case *lambdaExpr:
-		// Lambda body should be inlined with current bindings
-		// (but lambda params shadow any existing bindings)
+		lambdaBindings := copyBindings(bindings)
+		for _, param := range n.Params {
+			delete(lambdaBindings, param)
+		}
 		return &lambdaExpr{
 			Params: n.Params,
-			Body:   inlineLetExprs(n.Body, bindings),
+			Body:   inlineLetExprs(n.Body, lambdaBindings),
 		}
 
 	case *pipeExpr:
@@ -252,6 +361,29 @@ func inlineLetExprs(node Node, bindings map[string]Node) Node {
 
 	default:
 		return node
+	}
+}
+
+func isClosedLiteralValue(node Node) bool {
+	switch n := node.(type) {
+	case *intLit, *floatLit, *stringLit, *boolLit, *nilLit:
+		return true
+	case *arrayLit:
+		for _, elem := range n.Elements {
+			if !isClosedLiteralValue(elem) {
+				return false
+			}
+		}
+		return true
+	case *mapLit:
+		for i := range n.Keys {
+			if !isClosedLiteralValue(n.Keys[i]) || !isClosedLiteralValue(n.Values[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
 }
 
@@ -367,9 +499,10 @@ func copyNode(node Node) Node {
 		}
 	case *letExpr:
 		return &letExpr{
-			Name:  n.Name,
-			Value: copyNode(n.Value),
-			Body:  copyNode(n.Body),
+			Name:         n.Name,
+			Value:        copyNode(n.Value),
+			Body:         copyNode(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 	case *spreadExpr:
 		return &spreadExpr{
@@ -385,10 +518,11 @@ func copyNode(node Node) Node {
 			}
 		}
 		return &destructureExpr{
-			Pattern: pattern,
-			IsArray: n.IsArray,
-			Value:   copyNode(n.Value),
-			Body:    copyNode(n.Body),
+			Pattern:      pattern,
+			IsArray:      n.IsArray,
+			Value:        copyNode(n.Value),
+			Body:         copyNode(n.Body),
+			ImplicitBody: n.ImplicitBody,
 		}
 	default:
 		return node
@@ -399,10 +533,25 @@ func copyNode(node Node) Node {
 func ASTToString(node Node) string {
 	switch n := node.(type) {
 	case *intLit:
+		if n.Value == math.MinInt64 {
+			return "-9223372036854775807 - 1"
+		}
 		return fmt.Sprintf("%d", n.Value)
 
 	case *floatLit:
-		return fmt.Sprintf("%g", n.Value)
+		switch {
+		case math.IsNaN(n.Value):
+			return "sqrt(-1.0)"
+		case math.IsInf(n.Value, 1):
+			return "1e308 * 1e308"
+		case math.IsInf(n.Value, -1):
+			return "-1e308 * 1e308"
+		}
+		text := strconv.FormatFloat(n.Value, 'g', -1, 64)
+		if !strings.ContainsAny(text, ".eE") {
+			text += ".0"
+		}
+		return text
 
 	case *stringLit:
 		return fmt.Sprintf("%q", n.Value)
@@ -433,7 +582,8 @@ func ASTToString(node Node) string {
 
 	case *unaryExpr:
 		operand := ASTToString(n.Operand)
-		if needsParens(n.Operand) {
+		_, nestedUnary := n.Operand.(*unaryExpr)
+		if needsParens(n.Operand) || nestedUnary {
 			operand = "(" + operand + ")"
 		}
 		if n.Op == kwNot {
@@ -442,25 +592,34 @@ func ASTToString(node Node) string {
 		return n.Op + operand
 
 	case *ternaryExpr:
+		cond := ASTToString(n.Cond)
+		if needsParens(n.Cond) {
+			cond = "(" + cond + ")"
+		}
 		return fmt.Sprintf("%s ? %s : %s",
-			ASTToString(n.Cond),
+			cond,
 			ASTToString(n.Then),
 			ASTToString(n.Else))
 
 	case *coalesceExpr:
-		return fmt.Sprintf("%s ?? %s",
-			ASTToString(n.Left),
-			ASTToString(n.Right))
+		left, right := ASTToString(n.Left), ASTToString(n.Right)
+		if needsParens(n.Left) {
+			left = "(" + left + ")"
+		}
+		if needsParens(n.Right) {
+			right = "(" + right + ")"
+		}
+		return fmt.Sprintf("%s ?? %s", left, right)
 
 	case *callExpr:
 		args := make([]string, len(n.Args))
 		for i, arg := range n.Args {
 			args[i] = ASTToString(arg)
 		}
-		return fmt.Sprintf("%s(%s)", ASTToString(n.Func), strings.Join(args, ", "))
+		return fmt.Sprintf("%s(%s)", postfixOperand(n.Func), strings.Join(args, ", "))
 
 	case *memberExpr:
-		obj := ASTToString(n.Object)
+		obj := postfixOperand(n.Object)
 		if n.Computed {
 			prop := ASTToString(n.Property)
 			if n.Optional {
@@ -475,7 +634,7 @@ func ASTToString(node Node) string {
 		return fmt.Sprintf("%s.%s", obj, prop)
 
 	case *indexExpr:
-		obj := ASTToString(n.Object)
+		obj := postfixOperand(n.Object)
 		idx := ASTToString(n.Index)
 		if n.Optional {
 			return fmt.Sprintf("%s?.[%s]", obj, idx)
@@ -483,7 +642,7 @@ func ASTToString(node Node) string {
 		return fmt.Sprintf("%s[%s]", obj, idx)
 
 	case *sliceExpr:
-		obj := ASTToString(n.Object)
+		obj := postfixOperand(n.Object)
 		low := ""
 		high := ""
 		step := ""
@@ -510,15 +669,23 @@ func ASTToString(node Node) string {
 		pairs := make([]string, len(n.Keys))
 		for i := range n.Keys {
 			key := ASTToString(n.Keys[i])
+			if _, plain := n.Keys[i].(*stringLit); !plain {
+				key = "[" + key + "]"
+			}
 			val := ASTToString(n.Values[i])
 			pairs[i] = key + ": " + val
 		}
 		return "{" + strings.Join(pairs, ", ") + "}"
 
 	case *rangeExpr:
-		return fmt.Sprintf("(%s..%s)",
-			ASTToString(n.Start),
-			ASTToString(n.End))
+		start, end := ASTToString(n.Start), ASTToString(n.End)
+		if needsParens(n.Start) {
+			start = "(" + start + ")"
+		}
+		if needsParens(n.End) {
+			end = "(" + end + ")"
+		}
+		return fmt.Sprintf("(%s..%s)", start, end)
 
 	case *pipeExpr:
 		return fmt.Sprintf("%s | %s",
@@ -534,6 +701,9 @@ func ASTToString(node Node) string {
 		return fmt.Sprintf("(%s) => %s", params, body)
 
 	case *letExpr:
+		if n.ImplicitBody {
+			return fmt.Sprintf("let %s = %s", n.Name, ASTToString(n.Value))
+		}
 		return fmt.Sprintf("let %s = %s; %s",
 			n.Name,
 			ASTToString(n.Value),
@@ -554,16 +724,18 @@ func ASTToString(node Node) string {
 			}
 			fields[i] = str
 		}
-		if n.IsArray {
-			return fmt.Sprintf("let [%s] = %s; %s",
-				strings.Join(fields, ", "),
-				ASTToString(n.Value),
-				ASTToString(n.Body))
+		terminator := "; " + ASTToString(n.Body)
+		if n.ImplicitBody {
+			terminator = ""
 		}
-		return fmt.Sprintf("let {%s} = %s; %s",
+		if n.IsArray {
+			return fmt.Sprintf("let [%s] = %s%s",
+				strings.Join(fields, ", "),
+				ASTToString(n.Value), terminator)
+		}
+		return fmt.Sprintf("let {%s} = %s%s",
 			strings.Join(fields, ", "),
-			ASTToString(n.Value),
-			ASTToString(n.Body))
+			ASTToString(n.Value), terminator)
 
 	default:
 		return fmt.Sprintf("<%T>", node)
@@ -572,11 +744,21 @@ func ASTToString(node Node) string {
 
 // needsParens determines if an expression needs parentheses when used as operand.
 func needsParens(node Node) bool {
-	switch node.(type) {
-	case *binaryExpr, *ternaryExpr, *coalesceExpr, *letExpr:
+	switch n := node.(type) {
+	case *intLit:
+		return n.Value == math.MinInt64
+	case *binaryExpr, *unaryExpr, *ternaryExpr, *coalesceExpr, *letExpr, *destructureExpr, *lambdaExpr, *pipeExpr:
 		return true
 	}
 	return false
+}
+
+func postfixOperand(node Node) string {
+	text := ASTToString(node)
+	if needsParens(node) {
+		return "(" + text + ")"
+	}
+	return text
 }
 
 // ExtractOption configures [ExtractVariablesOpts].

@@ -326,7 +326,7 @@ func GetAllExamples() []Category {
 				{Name: descComplex, Expression: `let {name, role = "user", age: years} = person; sprintf("%s (%s, %v)", name, role, years)`, Description: "Combined features", Expected: `"Bob (user, 25)"`, Env: map[string]any{"person": map[string]any{exName: litBob, exAge: 25}}},
 				{Name: "Array basic", Expression: "let [first, second] = arr; first + second", Description: "Array destructuring", Expected: "3", Env: map[string]any{exArr: []any{1, 2, 3}}},
 				{Name: "Array default", Expression: "let [a, b, c = 0] = arr; c", Description: "Array with default", Expected: "0", Env: map[string]any{exArr: []any{1, 2}}},
-				{Name: "Skip elements", Expression: "let [first, _, third] = arr; first + third", Description: "Skip with placeholder", Expected: "4", Env: map[string]any{exArr: []any{1, 2, 3}}},
+				{Name: "Named underscore", Expression: "let [first, _, third] = arr; first + third", Description: "Named _ binding (not a placeholder)", Expected: "4", Env: map[string]any{exArr: []any{1, 2, 3}}},
 			},
 		},
 
@@ -412,7 +412,7 @@ func GetAllExamples() []Category {
 				{Name: "replace", Expression: `replace("hello", "l", "L")`, Description: "Replace all", Expected: `"heLLo"`},
 				{Name: "substr", Expression: `substr("hello", 1, 3)`, Description: "Substring", Expected: `"ell"`},
 				{Name: "indexOf", Expression: `indexOf("hello", "l")`, Description: "Index of", Expected: "2"},
-				{Name: "repeat", Expression: `repeat("ab", 3)`, Description: "Repeat", Expected: `"ababab"`},
+				{Name: "repeat", Expression: `repeat("ab", 3)`, Description: "Repeat value into an array", Expected: `["ab", "ab", "ab"]`},
 			},
 		},
 
@@ -432,7 +432,7 @@ func GetAllExamples() []Category {
 				{Name: "sort", Expression: "sort([3, 1, 4, 1, 5])", Description: "Sort ascending", Expected: "[1, 1, 3, 4, 5]"},
 				{Name: "unique", Expression: "unique([1, 2, 2, 3, 3, 3])", Description: "Unique elements", Expected: litArr123},
 				{Name: "concat", Expression: "concat([1, 2], [3, 4], [5])", Description: "Concatenate", Expected: litArr12345},
-				{Name: "flatten", Expression: "flatten([[1, 2], [3, [4, 5]]])", Description: "Flatten nested", Expected: "[1, 2, 3, [4, 5]]"},
+				{Name: "flatten", Expression: "flatten([[1, 2], [3, [4, 5]]])", Description: "Flatten recursively", Expected: "[1, 2, 3, 4, 5]"},
 				{Name: "chunk", Expression: "chunk([1, 2, 3, 4, 5], 2)", Description: "Split into chunks", Expected: "[[1, 2], [3, 4], [5]]"},
 				{Name: "zip", Expression: `zip([1, 2, 3], ["a", "b", "c"])`, Description: "Zip arrays", Expected: `[[1, "a"], [2, "b"], [3, "c"]]`},
 				{Name: "compact", Expression: `compact([1, nil, 2, nil, 3])`, Description: "Remove nil values", Expected: litArr123},

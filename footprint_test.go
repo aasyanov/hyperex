@@ -13,14 +13,14 @@ import (
 //	Value       - tagged union (kind+bits+ptr); documented as 32 B
 //	Engine      - config/builtins/optimizer/typeChecker + RWMutex + Stats atomics
 //	Program     - source + bytecode + engine refs + expect flags
-//	vm          - pooled executor frame (stack/env/limits + Run context)
+//	vm          - pooled executor frame (stack/env/limits + Run context + lexical bindings)
 //	instruction - Op + 2 ints + Name string header
 //	bytecode    - four slice headers (instructions/constants/names/params)
 const (
 	maxValueBytes       = 32
 	maxEngineBytes      = 96
 	maxProgramBytes     = 40
-	maxVMBytes          = 144
+	maxVMBytes          = 168 // +24 B: saved lexical bindings for nested let/destructure
 	maxInstructionBytes = 40
 	maxBytecodeBytes    = 96
 )

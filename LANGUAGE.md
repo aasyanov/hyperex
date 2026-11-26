@@ -1,980 +1,1467 @@
-# HyperEx Language Specification
+# HyperEx Language Guide and Specification
 
-> Normative English specification of the HyperEx expression language for `github.com/aasyanov/hyperex`.  
-> Document version: 1.5.0 (2026-10).  
-> Engine overview / API: [README.md](README.md) · [doc.go](doc.go). History: [CHANGELOG.md](CHANGELOG.md).
+> **Normative English guide for `github.com/aasyanov/hyperex` v1.5.1 (2026-11).**
+> API overview: [README.md](README.md) · [doc.go](doc.go) · History: [CHANGELOG.md](CHANGELOG.md).
 
-This document describes **expression syntax and semantics**. Host options (`WithSandbox`, `WithStrictMode`, `WithOperator`, etc.) are **not language syntax**; see §11 (numeric and sandbox contracts live there too).
+This document teaches the expression language step by step and also serves as its reference. It covers syntax, evaluation rules, collections, functions, numeric and temporal behavior, host-side policies, Studio tools, and common failure modes. It intentionally includes both introductory explanations and exact edge cases.
 
-On conflict with the README or examples, **this specification wins** (along with the implementation code).
+When this document and an older example disagree, the **current implementation and this specification win**. If the implementation and this document disagree, report a documentation or implementation defect rather than silently choosing one.
+
+## How to read this guide
+
+Start with §1–§5 if you are new to HyperEx. Those sections explain the small core: one expression, values, variables, operators, and collections. Continue with §6–§9 for lambdas, pipes, and built-ins. Read §10–§12 before using untrusted expressions: numeric behavior, sandboxing, and host options change observable behavior and are just as important as grammar.
+
+Examples use `hyperex` for an expression and `text` for its result. Results show the logical value rather than Go formatting details such as `int64(3)` versus `float64(3.0)`. Where the distinction matters, it is stated explicitly.
+
+A typical Go call is:
+
+```go
+program, err := hyperex.Compile(`price * quantity`)
+if err != nil {
+    // Handle a parse, type-check, or compile error.
+}
+result, err := program.Eval(ctx, map[string]any{
+    "price":    99.99,
+    "quantity": 3,
+})
+```
+
+The rest of this guide is about the expression inside `Compile` and the environment in which it executes.
 
 ---
 
-## 1. Introduction and program model
+## 1. The program model: one expression, evaluated once
 
-HyperEx is a **single-expression** language: the compilation/evaluation unit is exactly one expression through EOF. There are no statement forms (`if`/`else` as statements, loops, `return`, `{stmt;…}` blocks).
+### 1.1. A program ends at EOF
+
+A HyperEx source unit contains exactly one expression followed by end-of-input:
 
 ```text
-program  ::=  expression  EOF
+program ::= expression EOF
 ```
 
-Conditionality is via the ternary operator `? :`, coalesce `??`, short-circuit `&&`/`||`/`and`/`or`, and higher-order functions. Name binding is via `let` / destructuring (these are still expression forms).
+It is not a script, statement list, template, module, or general-purpose programming language. There are no statement blocks, imports, packages, `for` or `while` loops, `return`, `break`, or `continue`.
 
-The evaluation result is a runtime `Value` of one of the kinds (§3). Integers are `int64`; on arithmetic overflow they promote to `float64` (no wrap-around). Numeric model: §3.5; sandbox / Secure: §11.
+These are valid programs:
 
-```mermaid
-flowchart LR
-  SRC["Source text"] --> LEX["Lexer"]
-  LEX --> PARSE["Pratt parser"]
-  PARSE --> AST["Expression AST"]
-  AST --> COMP["Compiler"]
-  COMP --> BC["Bytecode"]
-  BC --> VM["VM"]
-  ENV["env + builtins"] --> VM
-  VM --> VAL["Value"]
+```hyperex
+2 + 2 * 3
 ```
 
----
+```hyperex
+let subtotal = price * quantity; subtotal * 1.2
+```
 
-## 2. Lexical structure
+```hyperex
+users | filter(u => u.active) | pluck("name") | sort
+```
 
-### 2.1. Comments and whitespace
+This is not a program:
 
-| Kind | Syntax | Note |
-|------|--------|------|
-| Line | `// …` | Through end of line (newline is whitespace) |
-| Block | `/* … */` | **Not nested**; unclosed → error `unterminated block comment` |
+```hyperex
+let x = 1
+x + 2
+```
 
-Whitespace is skipped: space, `\t`, `\r`, `\n`, and any `unicode.IsSpace`.
+Use `let` and a semicolon inside the single expression instead:
 
-### 2.2. Identifiers
+```hyperex
+let x = 1; x + 2
+```
 
-- **Start:** `_`, `$`, `#`, or a Unicode letter (`unicode.IsLetter`).
-- **Continue:** start set ∪ Unicode digit (`unicode.IsDigit`).
-- Keywords are **reserved** (they do not become `ident`).
+### 1.2. Compilation and evaluation are separate
 
-Valid examples: `x`, `_tmp`, `$0`, `#`, `пользователь`, `foo42`.
-
-### 2.3. Numbers
-
-| Form | Token | Example | Note |
-|------|-------|---------|------|
-| Decimal integer | `Int` | `42`, `012` | `ParseInt(_, 0, 64)` |
-| Hex | `Int` | `0xFF`, `0Xff` | |
-| Binary | `Int` | `0b1010`, `0B10` | |
-| Octal | `Int` | `0o777`, `0O10` | |
-| Float | `Float` | `3.14`, `.5` | `.` starts a float if a digit follows |
-| Scientific | `Float` | `1e10`, `1E-5` | even without a decimal point |
-
-Range vs float: `1..2` is the range operator, not a float (a dot with no digit after it does not start a float).
-
-Edge cases: an empty suffix (`0x`, `1e`) may pass the lexer and fail in the parser (`invalid integer` / `invalid float`).
-
-### 2.4. Strings
-
-| Quotes | Escapes | Newlines |
-|--------|---------|----------|
-| `"` | yes | **forbidden** → unterminated |
-| `'` | yes | **forbidden** |
-| `` ` `` (raw) | **no** (`\` is literal) | **allowed** |
-
-Escapes in `"` / `'`: `\n` `\r` `\t` `\\` `\"` `\'` `\0` `\uXXXX` (exactly 4 hex digits). Unknown escape → character as-is. Truncated escape → error.
-
-### 2.5. Keywords
+The normal lifecycle is:
 
 ```text
-true  false  nil  in  not  and  or  let  if  else
+source text → lexer → Pratt parser → AST → optimizer → bytecode → VM → Value
 ```
 
-| Lexeme | Token / meaning |
-|--------|-----------------|
-| `true` / `false` | bool literals |
-| `nil` | nil literal |
-| `in` | membership operator |
-| `not` | unary `!` or part of `not in` |
-| `and` / `or` | synonyms for `&&` / `\|\|` |
-| `let` | binding |
-| `if` / `else` | **reserved**, no productions |
+`Compile` performs parsing, optional type checking and optimization, and bytecode generation. `Program.Eval` executes that immutable compiled program against a particular environment and context. Compile once at configuration load and reuse the `Program` for many evaluations; do not recompile on every event unless the expression changed.
 
-### 2.6. Dead / reserved tokens
+### 1.3. The environment supplies names and behavior
 
-The lexer recognizes these; the parser **does not use** them:
+An expression can refer to values provided by the host:
 
-| Token | Lexeme | Status |
-|-------|--------|--------|
-| `++` / `--` | increment/decrement | dead |
-| `->` | arrow | dead (lambdas use only `=>`) |
-| `if` / `else` | keywords | reserved with no semantics |
+```hyperex
+price * quantity + fee
+```
 
-### 2.7. Other operator lexemes
+```json
+{"price": 10, "quantity": 3, "fee": 2}
+```
 
 ```text
-( ) [ ] { } , . : ; => .. ...
-= == != < <= > >= + - * / % ** ! ~ & | ^ << >> >>>
-&& || ? ?? ?. ?.[ ~=
+32
+```
+
+The preferred hot-path environment is `map[string]any`. A struct or pointer to struct is also accepted. Exported fields are mapped by their Go name or by an exact `expr` tag:
+
+```go
+type Env struct {
+    Price    float64 `expr:"price"`
+    Quantity int     `expr:"quantity"`
+    Internal string  `expr:"-"`
+    Secret   string
+}
+```
+
+`Internal` is excluded. `Secret` remains available as `Secret`. A `json` tag does **not** create an alias. Unexported fields are ignored. The TypeChecker uses the same rules as runtime environment conversion.
+
+### 1.4. The result is a value, not necessarily a bool
+
+HyperEx is dynamically typed. Arithmetic, collection operations, function calls, and operators can produce different kinds at runtime. Logical operators often preserve an operand rather than manufacturing a boolean:
+
+```hyperex
+"hello" && "world"
+```
+
+```text
+"world"
+```
+
+```hyperex
+0 || 42
+```
+
+```text
+42
+```
+
+Use `EvalBool` only when that conversion is what you want. Do not assume every predicate is internally represented as a Go `bool` before conversion.
+
+---
+
+## 2. Values, truthiness, equality, and ordering
+
+### 2.1. Runtime kinds
+
+| Kind | `type(x)` | Runtime representation and notes |
+|---|---|---|
+| `nil` | `"nil"` | Absence of a value |
+| `bool` | `"bool"` | Go `bool` |
+| `int` | `"int"` | Signed 64-bit integer |
+| `float` | `"float"` | IEEE-754 64-bit floating-point value |
+| `string` | `"string"` | UTF-8 text; indexing and length are rune-based |
+| `array` | `"array"` | `[]any` |
+| `map` | `"map"` | `map[string]any` |
+| `function` | `"function"` | Lambda closure, built-in, or host function |
+| `time` | `"time"` | UTC instant stored as Unix nanoseconds |
+| `duration` | `"duration"` | Signed 64-bit nanoseconds |
+| `any` | host type name or `"nil"` | External Go value; restricted in Secure mode |
+
+`time.Time` and `time.Duration` have dedicated kinds. A `time.Time` is normalized to UTC and loses its monotonic component. The representable instant range is the signed `int64` Unix-nanosecond range; do not pass host times outside it and expect lossless round trips.
+
+### 2.2. Truthiness is used in more than `if`
+
+Conditions in `&&`, `||`, `!`/`not`, and ternaries use truthiness rather than requiring a boolean:
+
+| Kind | Falsy when | Examples of falsy values |
+|---|---|---|
+| `nil` | always | `nil` |
+| `bool` | false | `false` |
+| `int` | zero | `0` |
+| `float` | zero | `0.0`, `-0.0` |
+| `string` | empty | `""` |
+| `array` / `map` | empty | `[]`, `{}` |
+| `time` / `duration` | stored bits are zero | Unix epoch, zero duration |
+| `function` / `any` | underlying pointer is nil | typed nil where preserved |
+
+All other values are truthy. In particular, `NaN` is truthy, `0.0` is falsy, and an empty array is falsy while `[nil]` is truthy.
+
+Examples:
+
+```hyperex
+!0
+```
+
+```text
+true
+```
+
+```hyperex
+!1
+```
+
+```text
+false
+```
+
+```hyperex
+"" ? "empty" : "not empty"
+```
+
+```text
+"empty"
+```
+
+```hyperex
+[] ? 1 : 2
+```
+
+```text
+2
+```
+
+This is deliberate language behavior, not a type-checker bug.
+
+### 2.3. `&&` and `||` return operands
+
+Both operators short-circuit. Their result is the last evaluated operand, not a coerced boolean:
+
+| Expression | Result | Reason |
+|---|---|---|
+| `"hi" && "bye"` | `"bye"` | Left is truthy; evaluate right |
+| `0 && missing` | `0` | Right is never evaluated |
+| `5 || 0` | `5` | Left is truthy |
+| `false || "fallback"` | `"fallback"` | Left is falsy |
+| `nil || "x"` | `"x"` | Nil is falsy |
+| `true && 1` | `1` | Result is an int, not `true` |
+
+`and` and `or` are exact aliases for `&&` and `||`. In contrast, `!` and `not` always produce a boolean.
+
+Do not write mathematical comparison chains as `1 < 2 < 3`. Comparisons are left-associative, so the first comparison produces a boolean and the second compares that boolean with `3`. Write:
+
+```hyperex
+1 < 2 && 2 < 3
+```
+
+### 2.4. Equality: kind, bits, structure, identity
+
+`==` and `!=` use the following rules:
+
+1. Different kinds are unequal, except two numeric values, which are compared as floats.
+2. `nil` equals `nil`.
+3. `bool`, `int`, `float`, `time`, and `duration` compare their stored bits.
+4. Strings compare contents.
+5. Arrays and maps compare deeply and structurally, with cycle detection and a recursion-depth guard.
+6. Functions and external values use identity-oriented rules rather than structural comparison.
+
+Consequences worth remembering:
+
+- `1 == 1.0` is true, but conversion of very large integers to float can lose precision.
+- `0.0 == -0.0` is **false**: their bits differ.
+- Two NaNs with the same bit pattern are equal; NaN does not follow the usual IEEE `NaN != NaN` rule here.
+- `[1, {a: 2}] == [1, {a: 2}]` is true.
+- A cyclic map compared with itself is true and does not recurse forever.
+
+If you need ordering rather than equality, read the next section; it has different NaN behavior.
+
+### 2.5. Ordering and incomparable values
+
+`Compare` is used by `<`, `<=`, `>`, `>=`, `between`, `min`, `max`, `sort`, and `sortBy`:
+
+- Two numbers are compared as floats.
+- Two times compare their Unix nanoseconds.
+- Two durations compare nanoseconds.
+- Two strings compare lexicographically.
+- Otherwise, equal values return `0`; unequal or incomparable values return `-1` as an arbitrary fallback.
+
+NaN is neither less nor greater than another numeric value, so `Compare(NaN, x)` returns `0`. Therefore `NaN <= x` and `NaN >= x` are true, while `NaN < x` and `NaN > x` are false. This is unusual enough that non-finite inputs should normally be rejected at the host boundary when ordering matters.
+
+The incomparable fallback is not a total ordering. Sorting arrays with arbitrary mixed kinds can therefore be surprising. Prefer homogeneous arrays or a `sortBy` key with a consistent kind.
+
+---
+
+## 3. Lexical structure: how source text becomes tokens
+
+### 3.1. Whitespace and comments
+
+Spaces, tabs, carriage returns, newlines, and other Unicode whitespace are ignored between tokens.
+
+```hyperex
+// A line comment through the end of the line
+1 + 2 /* a block comment */ * 3
+```
+
+Block comments do not nest. An unterminated block comment is an error. Comments are omitted during parsing but retained by the public `Tokenize` API for editors and highlighters.
+
+### 3.2. Identifiers
+
+An identifier starts with `_`, `$`, `#`, or a Unicode letter. Subsequent characters may also include Unicode digits.
+
+Valid names include `x`, `_tmp`, `$0`, `#`, `price2`, `пользователь`, and `世界`.
+
+Reserved words are:
+
+```text
+true false nil in not and or let if else
+```
+
+`if` and `else` are reserved but have no production in the language. They should not be used as variable names.
+
+### 3.3. Integer literals
+
+| Form | Example | Meaning |
+|---|---|---|
+| Decimal | `42` | 42 |
+| Leading-zero octal | `012` | **10**, not decimal 12 |
+| Explicit octal | `0o777`, `0O10` | 511, 8 |
+| Hexadecimal | `0xFF`, `0Xff` | 255 |
+| Binary | `0b1010`, `0B10` | 10, 2 |
+
+Integers are parsed as signed 64-bit values. `0x` alone is rejected by the parser. To express `math.MinInt64`, use arithmetic rather than an oversized positive literal:
+
+```hyperex
+-9223372036854775807 - 1
+```
+
+### 3.4. Floating-point literals
+
+```hyperex
+3.14
+.5
+1e10
+1E-5
+```
+
+A dot followed by a digit starts a float, so `.5` is `0.5`. A range is different: `1..2` contains the `..` operator rather than a decimal point.
+
+`1e` is not a valid complete literal. NaN and infinity are not source keywords; they can be produced by arithmetic, host values, or built-ins.
+
+### 3.5. Strings and escapes
+
+| Delimiter | Escapes | Literal newline |
+|---|---|---|
+| `"double"` | supported | rejected as unterminated |
+| `'single'` | supported | rejected as unterminated |
+| `` `raw` `` | no escapes; backslash is literal | allowed |
+
+Recognized escapes are `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, `\0`, and `\uXXXX` with exactly four hexadecimal digits. An unknown escape keeps the escaped character and discards the backslash. A trailing incomplete escape is an error.
+
+```hyperex
+"line1\nline2"
+```
+
+```text
+line1
+line2
+```
+
+```hyperex
+`C:\raw\path`
+```
+
+```text
+C:\raw\path
+```
+
+String length, indexing, slicing, `substr`, and `indexOf` operate on Unicode code points (runes), not bytes:
+
+```hyperex
+len("🎉🎊🎁")
+```
+
+```text
+3
+```
+
+```hyperex
+"Привет"[0]
+```
+
+```text
+"П"
 ```
 
 ---
 
-## 3. Types and values
+## 4. Operators and precedence
 
-### 3.1. Kinds
+### 4.1. Complete precedence table
 
-| Kind | Internal representation | `type(x)` |
-|------|-------------------------|-----------|
-| `nil` | absence of a value | `"nil"` |
-| `bool` | bool | `"bool"` |
-| `int` | **int64** | `"int"` |
-| `float` | **float64** | `"float"` |
-| `string` | string (UTF-8) | `"string"` |
-| `array` | `[]any` | `"array"` |
-| `map` | `map[string]any` | `"map"` |
-| `function` | closure / builtin / host fn | `"function"` |
-| `time` | UTC instant as **int64** unix nanoseconds in `bits` | `"time"` |
-| `duration` | **int64** nanoseconds in `bits` | `"duration"` |
-| `any` | external host value | host type name or `"nil"` |
+Higher numbers bind more tightly. Parentheses are the clearest way to communicate intent when the order is not obvious.
 
-`NewValue(time.Time)` → `time` (UTC Absolute; monotonic stripped via `UnixNano`).  
-`NewValue(time.Duration)` → `duration`.  
-`kindAny` appears from the env for other non-JSON-like Go values (structs, etc.). In a **Secure** sandbox, `time.Time` / `time.Duration` are accepted; other structs remain rejected — see §11.
-
-There is **no** `now()` builtin (host injects wall clock into the env).
-
-### 3.2. Truthiness (`Value.Bool`)
-
-| Kind | False when |
-|------|------------|
-| `nil` | always |
-| `bool` | `false` |
-| `int` | `0` |
-| `float` | `0.0` |
-| `string` | `""` |
-| `array` / `map` | length 0 |
-| `time` / `duration` | `bits == 0` |
-| other | `ptr == nil` |
-
-Used by: `!` / `not`, `&&` / `||`, ternary condition, `filter` / `all` / `any` / …, VM jumps.
-
-### 3.3. Equality (`Equal`)
-
-1. Different kinds: equal **only** if both are numbers → compare as float.
-2. Same kind:
-   - `nil` — always equal;
-   - `bool` / `int` / `float` / `time` / `duration` — by bits (`bits`);
-   - `string` — by contents;
-   - `array` / `map` — deep comparison;
-   - otherwise — pointer identity.
-
-**Consequence:** two NaNs with the same bit-pattern are equal; float comparison uses `bits`, not the IEEE “NaN ≠ NaN” rule as a separate case.
-
-### 3.4. Ordering (`Compare`) → −1 / 0 / +1
-
-| Pair | Rule |
-|------|------|
-| both numbers | compare as float |
-| both `time` | instant order (unix ns) |
-| both `duration` | ns order |
-| both strings | lexicographic |
-| otherwise | `Equal` → 0; else **−1** (incomparable → arbitrary −1) |
-
-Used by `min`/`max`/`sort`/`between`/operators `<` `<=` `>` `>=`.
-
-### 3.5. Numeric model (summary)
-
-- Expression integer type: **`int64`**.
-- Overflow of `+`/`-`/`*` (and related cases) → promote to **`float64`** (no modular wrap).
-- Integer division `/` — truncates toward zero; `/0` → error. Under host option `WithNumericMode(NumericFloat64)`, numeric `/` (and `+,-,*,%,**`, unary `-`) yield **`float64`** — so `1/2` → `0.5` (default remains `0`).
-- `ceil` / `floor` / `round` usually return `int64`; NaN/Inf/out of int64 → `float64`.
-- `fromJSON`: JSON numbers → float; to int64 only for “safe” integers \(|n| \le 2^{53}-1\).
-- Host `WithNonFinite(NonFiniteError)` rejects successful Eval returning NaN/Inf (`ErrNonFinite`).
-
-Host options that change arithmetic / finiteness: §11.
-
----
-
-## 4. Operators
-
-### 4.1. Precedence table
-
-The **higher** the number, the **tighter** the binding. Source: `tokenType.Precedence()` / `IsRightAssociative()`.
-
-| Prec | Operators | Associativity |
-|------|-----------|---------------|
-| 1 | `or`, `\|\|` | left |
+| Precedence | Operators | Associativity |
+|---|---|---|
+| 1 | `or`, `||` | left |
 | 2 | `and`, `&&` | left |
-| 3 | `\|` (bitwise / pipe — heuristic §9) | left |
+| 3 | `|` (pipe or bitwise OR) | left |
 | 4 | `^` | left |
 | 5 | `&` | left |
 | 6 | `==`, `!=` | left |
-| 7 | `<`, `<=`, `>`, `>=`, `in`, `~=` | left |
+| 7 | `<`, `<=`, `>`, `>=`, `in`, `not in`, `~=` | left |
 | 8 | `<<`, `>>`, `>>>` | left |
 | 9 | `+`, `-` | left |
 | 10 | `*`, `/`, `%` | left |
-| 11 | `**` | **right** |
-| 12 | `??` | **right** |
+| 11 | `**` | right |
+| 12 | `??` | right |
 | 13 | `..` | left |
 
-Only `**` and `??` are right-associative.
+Ternary `? :`, unary `-`/`!`/`not`/`~`, and postfix member/index/call operations have dedicated parsing rules. `not in` has exactly the same precedence as `in`.
 
-### 4.2. ASCII ladder (weakest to strongest)
-
-```text
-  weakly  or  ||
-          and  &&
-          |
-          ^
-          &
-          ==  !=
-          <  <=  >  >=  in  ~=
-          <<  >>  >>>
-          +  -
-          *  /  %
-          **          (right)
-          ??          (right)
-  strongly  ..          (left)
+```hyperex
+1 + 2 not in [3]
 ```
 
-### 4.3. Outside the precedence table (parser specials)
+```text
+false // (1 + 2) not in [3]
+```
 
-| Construct | Binding |
-|-----------|---------|
-| Ternary `? :` | Only when `minPrec ≤ 1` (below OR). Chain is effectively right-assoc |
-| `not in` | Same level as `in` (prec 7) |
-| Unary `-` `!`/`not` `~` | Prefix, recursive |
-| Postfix `.` `?.` `[]` `?.[` `()` | Left to right |
-| Range `..` | Prec 13, left-assoc; RHS = `parsePrecedence(14)` (like ordinary left-assoc ops) |
+`??` binds more tightly than arithmetic operators:
 
-Synonyms: `and`≡`&&`, `or`≡`||`, `not`≡`!` (unary).
+```hyperex
+2 + 3 ?? 4
+```
 
-### 4.4. Semantics of key binary/logical operators
+```text
+5 // 2 + (3 ?? 4)
+```
 
-#### Short-circuit `&&` / `||` (and `and` / `or`)
+Use parentheses to request the other meaning:
 
-- Short-circuit on **truthiness**.
-- Result is the **value of the last evaluated operand**, not a forced `bool`.
+```hyperex
+(2 + 3) ?? 4
+```
 
-| Expression | Result |
-|------------|--------|
-| `"hi" && "bye"` | `"bye"` |
-| `0 && 5` | `0` |
-| `5 \|\| 0` | `5` |
-| `nil \|\| "x"` | `"x"` |
-| `"" && 1` | `""` |
-| `true && false` | `false` |
+### 4.2. Arithmetic `+`, `-`, `*`, `/`, `%`, `**`
 
-Compilation: jump on left-hand truthiness; right-hand is not evaluated on short-circuit.
+`+` concatenates strings whenever either operand is a string, unless temporal rules take precedence. It also concatenates two arrays and performs numeric addition. Other combinations are errors.
 
-#### Coalesce `??`
+```hyperex
+"answer: " + 42
+```
 
-- Replaces **only** when `IsNil` (not when falsy).
-- Precedence **12** (higher than `+`).
+```text
+"answer: 42"
+```
 
-| Expression | Result | Why |
-|------------|--------|-----|
-| `nil ?? 42` | `42` | nil |
-| `0 ?? 42` | `0` | 0 is not nil |
-| `"" ?? "x"` | `""` | empty string is not nil |
-| `2 + 3 ?? 4` | `5` | `2 + (3 ?? 4)` |
-| `(2 + 3) ?? 4` | `5` | sum is not nil |
+```hyperex
+[1, 2] + [3, 4]
+```
 
-#### Comparison and membership
+```text
+[1, 2, 3, 4]
+```
 
-| Op | Behavior |
-|----|----------|
-| `==` / `!=` | via `Equal` |
-| `<` `<=` `>` `>=` | via `Compare` → bool |
-| `in` | array (Equal elem), map (string key), string (substring; `"" in s` — true), `any` via reflect |
-| `not in` | negation of `in` |
-| `~=` | regex match on strings (`getRegexp`); invalid pattern → error |
+Integer `+`, `-`, and `*` promote to float on signed 64-bit overflow rather than wrapping. Integer division truncates toward zero. One special Go integer edge is retained: `MinInt64 / -1` yields `MinInt64` rather than a larger positive integer.
 
-#### Arithmetic and bitwise
+```hyperex
+10 / 3
+```
 
-| Op | Behavior |
-|----|----------|
-| `+` | string+string → concat; array+array → concat; int+int overflow → float; mixed numbers → float; **temporal:** `t+d` / `d+t` → time; `d+d` → duration; `t+t` → **error**; string+time → **error** (no silent concat) |
-| `-` | numeric as before; **temporal:** `t-d` → time; `t-t` → duration; `d-d` → duration |
-| `*` | overflow → float; `*` also `string * int` (repeat, ~10MB limit); `d*n` / `n*d` → duration |
-| `/` | int/int trunc toward 0; otherwise float; `/0` error; `d/n` → duration |
-| `%` | int `%`; otherwise `math.Mod`; `%0` error |
-| `**` | int^non-negative int without overflow, else `math.Pow` float |
-| unary `-` | `-MinInt64` → float; duration negation; time negation → **error** |
-| `&` `\|` `^` `~` `<<` `>>` `>>>` | via `.Int()`; shifts: negatives rejected; `>>>` unsigned |
+```text
+3
+```
 
-There is **no** unary `+`.
+```hyperex
+10.0 / 3
+```
 
-Calendar fields are **not** operators — use builtins (`timeHour`, `timeWeekday`, …). `timeWeekday` uses Go’s Sunday=0 … Saturday=6.
+```text
+3.3333333333333335
+```
+
+Division or modulo by zero returns `ErrDivisionByZero`.
+
+`*` also repeats a string when the left operand is a string and the right is an integer. Non-positive counts produce an empty string. Results are capped at 10 MiB to avoid unbounded allocation.
+
+```hyperex
+"ab" * 3
+```
+
+```text
+"ababab"
+```
+
+`**` uses integer exponentiation when it is exact and the exponent is non-negative. Otherwise it uses floating-point `math.Pow`.
+
+### 4.3. Unary operators
+
+- `-x` performs numeric or duration negation. Negating `MinInt64` promotes to float. Negating time is an error.
+- `!x` and `not x` return boolean negation by truthiness.
+- `~x` performs bitwise NOT after integer conversion.
+
+### 4.4. Bitwise operators and shifts
+
+`&`, `|`, `^`, `~`, `<<`, `>>`, and `>>>` use integer conversion: integers stay exact, floats truncate, booleans become `0` or `1`, and numeric strings are parsed. `>>>` treats the left operand as unsigned.
+
+Negative shift counts are errors. For `<<` and `>>>`, counts of 64 or more produce zero. For signed `>>`, counts of 64 or more produce zero for non-negative values and `-1` for negative values.
+
+### 4.5. Membership `in` and `not in`
+
+- In an array, compare each element using `Equal`.
+- In a map, test the stringified key.
+- In a string, test substring containment; the empty substring is contained in every string.
+- External Go slices, arrays, and maps are handled through reflection unless Secure mode forbids them.
+
+```hyperex
+3 in [1, 2, 3]
+```
+
+```text
+true
+```
+
+```hyperex
+"ell" in "hello"
+```
+
+```text
+true
+```
+
+```hyperex
+"email" not in user
+```
+
+```text
+true // when user has no email key
+```
+
+### 4.6. Regular-expression matching `~=`
+
+The right operand is compiled as a Go RE2 regular expression, cached with a bounded LRU. The left operand is matched as a string. Invalid patterns return `ErrInvalidRegex`.
+
+```hyperex
+email ~= "^[a-z]+@[a-z]+\\.[a-z]+$"
+```
+
+There are no regex literals.
 
 ---
 
-## 5. Expression forms
+## 5. Collections: arrays, maps, indexing, slicing, and spread
 
-Every construct is a subexpression of a single program.
+### 5.1. Array literals and concatenation
 
-### 5.1. Literals
+Array elements are expressions evaluated from left to right:
 
-```text
-42          → int
-3.14        → float
-"hi"        → string
-true/false  → bool
-nil         → nil
+```hyperex
+[1, "two", true, nil]
 ```
 
-### 5.2. Identifier
+A trailing comma is allowed:
 
-Looks up local bindings (`let`/lambda parameters), then env / builtins. Inside lambdas also `#` and `$n` (§6).
-
-### 5.3. Grouping
-
-`(expr)` — ordinary parentheses. Empty `()` is invalid except in the form `() => body`.
-
-### 5.4. Unary
-
-```text
--x       // arithmetic negation
-!x       // truthiness negation → bool
-not x    // same as !x
-~x       // bitwise NOT
+```hyperex
+[1, 2, 3,]
 ```
 
-### 5.5. Binary
+Use `+` to concatenate two arrays. Use `concat` when you want variadic flattening by one level; non-array arguments become individual elements.
 
-All operators from §4, including `and`/`or`/`in`/`not in`/`~=`.
+### 5.2. Map literals and computed keys
 
-### 5.6. Ternary
+A map literal uses `{key: value}`. Identifier and string keys become literal string keys. Computed keys require brackets:
 
-```text
-cond ? then : else
+```hyperex
+{name: "Alice", "age": 30}
 ```
 
-Condition is truthiness. No statement-`if`/`else` (keywords are reserved).
-
-```text
-x > 0 ? "pos" : "nonpos"
+```hyperex
+{[prefix + "name"]: "Alice"}
 ```
 
-### 5.7. Coalesce
+Do not confuse `{[key]: value}` with `{key: value}`: the first evaluates `key`, the second uses the literal string `"key"`.
 
-```text
-a ?? b ?? c     // right-assoc; only nil
+### 5.3. Indexing and optional indexing
+
+Positive and negative indices are supported for arrays and strings. Negative indices count from the end. Strings index by rune.
+
+```hyperex
+arr[-1]
 ```
 
-### 5.8. Member / optional member
-
-| Form | Missing property | Object nil |
-|------|------------------|------------|
-| `a.b` | runtime error | error / depends on kind |
-| `a?.b` | → `nil` | → `nil` |
-
-### 5.9. Index / optional index
-
-| Form | Behavior |
-|------|----------|
-| `a[i]` | array/string (by runes), map (missing key → nil), `any` reflect |
-| `a?.[i]` | object nil **or** indexing error → `nil` |
-
-### 5.10. Slice
-
 ```text
-a[low:high]
-a[low:high:step]
-a[:]
-a[::]
+last element
 ```
 
-Open bounds are allowed.
-
-### 5.11. Call
-
-```text
-f(a, b, …)
+```hyperex
+"🎉🎊🎁"[1]
 ```
 
-Arguments are evaluated; `f` must be a function (builtin / lambda / host).
-
-### 5.12. Pipe `|`
-
-See §9. Compiler: the left operand becomes the first argument of the call on the right (or is prepended to the call’s argument list).
-
 ```text
-[1,2,3] | sum
-"  hi  " | trim
-data | filter(x => x > 0)
+"🎊"
 ```
 
-### 5.13. Lambda
+A missing map key returns `nil`. An out-of-bounds array or string index returns `ErrIndexOutOfBounds`.
 
-See §6.
+`arr?.[i]` returns `nil` if the object is nil or if indexing fails for any reason. Use it when absence is acceptable and you do not need to distinguish a missing key from an invalid object.
 
-### 5.14. Let
+### 5.4. Member access and optional member access
 
-See §7.
+`obj.field` reads a map key or an exported struct field. Missing properties are errors. `obj?.field` returns `nil` for a nil object or missing property.
 
-### 5.15. Range `..`
-
-```text
-1..5        → [1,2,3,4,5]   // inclusive
-5..1        → []            // start > end → empty
-1+2..4      → 1+(2..4)      // prec 13 > 9
-1..2+3      → (1..2)+3
-1..2..3     → (1..2)..3     // left-assoc; runtime: non-int start → Int() coerce
-!(1..2)     → !(array)      // false for non-empty
-!1..2       → (!1)..2       // unary binds tighter than range
+```hyperex
+user?.address?.city ?? "unknown"
 ```
 
-Size limit on the order of **1e6**.
+Optional chaining is useful for sparse data, but it also hides the reason for absence. Validate required fields explicitly when an error is preferable.
 
-### 5.16. Array literal + spread
+### 5.5. Slices
+
+The general form is:
 
 ```text
-[1, 2, 3]
-[1, 2,]          // trailing comma OK
-[...xs, 4]       // spread only inside array lit
+object[low:high:step]
 ```
 
-No spread in map/call.
+Low is inclusive, high is exclusive, and step defaults to `1`. Open bounds are allowed. Negative indices count from the end. A negative step walks backward and changes the default bounds.
 
-### 5.17. Map literal
+```hyperex
+arr[1:3]
+```
 
 ```text
-{a: 1, b: 2}
-{"k": v}
-{[expr]: v}      // computed key → .String()
-{a: 1,}          // trailing comma OK
+[second, third]
+```
+
+```hyperex
+arr[::2]
+```
+
+```text
+[first, third, fifth, ...]
+```
+
+```hyperex
+arr[::-1]
+```
+
+```text
+reversed array
+```
+
+A zero step returns `ErrInvalidSliceIndex`. Slicing a string produces another string, still measured in runes.
+
+### 5.6. Spread in array literals
+
+Spread is valid only inside an array literal:
+
+```hyperex
+[0, ...middle, 100]
+```
+
+It concatenates arrays at that position. Spread is not supported in map literals or function calls.
+
+---
+
+## 6. Bindings, lexical scope, lambdas, and pipes
+
+### 6.1. `let` is an expression, not a statement
+
+The canonical form is:
+
+```hyperex
+let name = value; body
+```
+
+The binding is visible in `body`, and the result is the result of `body`:
+
+```hyperex
+let price = 100; let quantity = 3; price * quantity
+```
+
+```text
+300
+```
+
+The body may be omitted. In that case the binding value is evaluated **once** and becomes the result:
+
+```hyperex
+let x = 5
+```
+
+```text
+5
+```
+
+A binding is evaluated even if its name is never used. This matters for host calls and errors.
+
+### 6.2. Nested bindings have lexical scope
+
+An inner `let` shadows the outer name only inside its body. After the body finishes, the previous binding is restored:
+
+```hyperex
+let x = 1; (let x = 2; x) + x
+```
+
+```text
+3 // inner x is 2; outer x is restored to 1
+```
+
+Destructuring follows the same rule. This also means Studio transformations must respect shadowing; simply replacing every same-named identifier is incorrect.
+
+### 6.3. Object and array destructuring
+
+Object destructuring supports aliases and defaults:
+
+```hyperex
+let {name, role = "guest", age: years} = person; years
+```
+
+Array destructuring binds by position:
+
+```hyperex
+let [first, second, third = 0] = arr; third
+```
+
+A missing element or property is `nil`, and a default is used only when that value is nil. `_` is an ordinary identifier, not a special skip marker.
+
+Without a semicolon, the source value is returned once, just as with simple `let`.
+
+### 6.4. Lambdas and closures
+
+Lambda forms are:
+
+```hyperex
+x => x * 2
+```
+
+```hyperex
+(acc, item) => acc + item
+```
+
+```hyperex
+() => 42
+```
+
+Closures capture a copy of the current environment. Nested lambdas work naturally:
+
+```hyperex
+let multiply = x => y => x * y;
+let double = multiply(2);
+double(5)
+```
+
+```text
+10
+```
+
+### 6.5. `#` and `$n` are names inside a lambda body
+
+`#` means the first argument. `$0`, `$1`, and so on mean arguments by position. They are available only during lambda execution.
+
+Crucially, **`# + 1` by itself is not a lambda**. This is invalid as a higher-order callback:
+
+```hyperex
+map([1, 2], # + 1) // wrong: # is looked up as an ordinary name
+```
+
+Write an explicit lambda instead:
+
+```hyperex
+map([1, 2], x => x + 1)
+```
+
+Or deliberately use the special names as lambda parameters:
+
+```hyperex
+map([1, 2], # => # + 1)
+```
+
+```hyperex
+map([1, 2], $0 => $0 + 1)
+```
+
+Higher-order built-ins pass both the element and its index, so `(x, i) => ...` and `$0/$1` can be used where appropriate.
+
+### 6.6. Pipe inserts the left value into a call
+
+For a named function, `value | name` becomes `name(value)`:
+
+```hyperex
+[1, 2, 3] | sum
+```
+
+```text
+6
+```
+
+For a call, the left value is prepended to the argument list:
+
+```hyperex
+[1, 2, 3, 4] | take(2)
+```
+
+```text
+[1, 2]
+```
+
+Pipes compose left to right:
+
+```hyperex
+users | filter(u => u.active) | pluck("name") | sort
+```
+
+### 6.7. Why `|` needs disambiguation
+
+The same token also means bitwise OR. The parser chooses using AST shape:
+
+1. An integer or float literal on either side means bitwise OR, never pipe.
+2. Array literals, calls, members, indexes, slices, pipes, ranges, or strings on the left, followed by an identifier or call, select pipe.
+3. An identifier on the left and a call on the right select pipe.
+4. An identifier on the left and a default built-in name on the right select pipe.
+5. Otherwise, two identifiers select bitwise OR.
+
+| Expression | Meaning |
+|---|---|
+| `[1,2,3] \| sum` | pipe |
+| `arr \| sum` | pipe because `sum` is a built-in |
+| `data \| filter(x => x > 0)` | pipe |
+| `x \| y` | bitwise OR |
+| `flags \| MASK` | bitwise OR |
+| `1 \| 2` | bitwise OR |
+| `a.b \| f` | pipe |
+
+To force pipe between arbitrary identifiers, use an explicit call: `x | transform()`. To force bitwise OR with built-in-looking names, introduce neutral intermediate names:
+
+```hyperex
+let a = xs; let b = mask; a | b
+```
+
+`Analyze` reports `WarnAmbiguousBitwiseOr` for ambiguous identifier/identifier bitwise usage and `WarnBuiltinNamePipe` when the built-in-name rule selected pipe. These warnings are part of Studio support, not evaluation errors.
+
+---
+
+## 7. Built-in functions: a guided tour
+
+The engine exposes 100 built-in names. `BuiltinNames()` returns a sorted copy and `IsBuiltin(name)` checks one name. There is no public `DefaultBuiltins` variable.
+
+### 7.1. Math
+
+| Name | Example | Result and edge behavior |
+|---|---|---|
+| `abs` | `abs(-42)` | `42`; `MinInt64` becomes float |
+| `min` | `min(5, 2, 8)` or `min([5, 2, 8])` | `2`; empty array gives nil |
+| `max` | `max(5, 2, 8)` or `max([5, 2, 8])` | `8`; empty array gives nil |
+| `ceil` | `ceil(3.2)` | `4`; NaN/Inf/out of int64 stays float |
+| `floor` | `floor(3.8)` | `3`; same non-finite rule |
+| `round` | `round(3.5)` | `4`; same non-finite rule |
+| `sqrt` | `sqrt(16)` | `4.0`; negative input gives NaN by default |
+| `pow` | `pow(2, 8)` | `256.0`; always float |
+| `log` | `log(2.718281828)` | approximately `1.0` |
+| `exp` | `exp(1)` | approximately `2.718` |
+| `sin` | `sin(0)` | `0.0` |
+| `cos` | `cos(0)` | `1.0` |
+
+`min` and `max` require at least one argument. Their comparisons inherit the NaN and incomparable rules from §2.5.
+
+### 7.2. Strings and length
+
+| Name | Example | Result and edge behavior |
+|---|---|---|
+| `len` | `len("🎉🎊🎁")` | `3` runes; arrays/maps use element count; other kinds give `0` |
+| `upper` | `upper("Hello")` | `"HELLO"`; input is stringified |
+| `lower` | `lower("Hello")` | `"hello"`; input is stringified |
+| `trim` | `trim("  hi  ")` | `"hi"` |
+| `trimLeft` | `trimLeft("xxhi", "x")` | `"hi"`; optional cutset, default whitespace |
+| `trimRight` | `trimRight("hixx", "x")` | `"hi"`; same defaults |
+| `split` | `split("a,b,c", ",")` | `["a", "b", "c"]` |
+| `join` | `join(["a", "b"], "-")` | `"a-b"`; array required |
+| `contains` | `contains("hello", "ell")` | `true`; string containment via `strings.Contains` |
+| `startsWith` | `startsWith("hello", "he")` | `true` |
+| `endsWith` | `endsWith("hello", "lo")` | `true` |
+| `replace` | `replace("hello", "l", "L")` | `"heLLo"` |
+| `substr` | `substr("hello", 1, 3)` | `"ell"`; rune-based, negative start from end |
+| `indexOf` | `indexOf("hello", "l")` | `2`; first rune index or `-1` |
+
+`contains` is not the `in` operator: it is a built-in string helper with stringification. `in` also handles arrays and maps.
+
+### 7.3. Arrays and structure
+
+| Name | Example | Result and edge behavior |
+|---|---|---|
+| `first` | `first([1, 2])` | `1`; empty gives nil |
+| `last` | `last([1, 2])` | `2`; empty gives nil |
+| `take` | `take([1, 2, 3], 2)` | `[1, 2]`; count clamped to `[0, len]` |
+| `skip` | `skip([1, 2, 3], 1)` | `[2, 3]`; count clamped similarly |
+| `reverse` | `reverse([1, 2, 3])` | `[3, 2, 1]`; new array |
+| `sort` | `sort([3, 1, 2])` | `[1, 2, 3]`; uses `Compare` |
+| `unique` | `unique([1, 2, 1, 3])` | `[1, 2, 3]`; typed, cycle-safe structural keys |
+| `concat` | `concat([1], [2, 3], 4)` | `[1, 2, 3, 4]`; one-level flattening |
+| `flatten` | `flatten([[1], [2, [3]]])` | `[1, 2, 3]`; recursive, maximum depth 100 |
+
+`unique` distinguishes typed representations and does not concatenate ambiguous textual keys. It should not be confused with `distinct` or set ordering; it preserves first occurrence order.
+
+### 7.4. Aggregation
+
+`sum` keeps integer accumulation until overflow, then continues as float. `avg` returns float and gives nil for an empty array. `count` uses the same length rules as `len`.
+
+`all`, `any`, `none`, and `one` have two forms:
+
+```hyperex
+all([true, 1, "ok"])       // truthiness of elements
+all([2, 4, 6], x => x > 0) // predicate form
+```
+
+| Function | Empty input | Meaning |
+|---|---|---|
+| `all` | `true` | Every element/predicate is truthy |
+| `any` | `false` | At least one is truthy |
+| `none` | `true` | None is truthy |
+| `one` | `false` | Exactly one is truthy |
+
+Predicates receive `(element, index)` and must be function values. Wrong predicate types return `ErrInvalidType`.
+
+### 7.5. Higher-order functions
+
+| Name | Callback | Behavior |
+|---|---|---|
+| `map` | `(elem, index)` | Transform every element |
+| `filter` | `(elem, index)` | Keep truthy matches |
+| `reduce` | `(acc, elem, index)` | Fold left; empty without initial value gives nil |
+| `find` | `(elem, index)` | First match or nil |
+| `findIndex` | `(elem, index)` | First matching index or `-1` |
+
+Examples:
+
+```hyperex
+map([1, 2, 3], x => x * x)
+```
+
+```text
+[1, 4, 9]
+```
+
+```hyperex
+reduce([1, 2, 3, 4], (acc, x) => acc + x, 0)
+```
+
+```text
+10
+```
+
+Lambda execution shares the parent context, operation budget, and call-depth policy. Cancellation therefore also applies inside callbacks.
+
+### 7.6. Type conversion
+
+| Name | Behavior |
+|---|---|
+| `int` | `TryInt`: numeric strings, floats, and bools convert; invalid input errors |
+| `float` | `TryFloat`: similar conversion to float |
+| `string` | Human-readable string form with bounded composite formatting and cycle markers |
+| `bool` | Truthiness conversion |
+| `type` | Runtime kind name |
+| `isNil` | True only for the nil kind |
+
+A float-to-int conversion truncates. Non-finite or out-of-range conversions can be rejected by stricter numeric paths; do not rely on host-specific float-to-int behavior.
+
+---
+
+## 8. Collection utilities, JSON, and deterministic output
+
+### 8.1. Repetition and generation
+
+- `repeat(value, n)` returns an **array** containing `value` `n` times. Negative counts become zero; the maximum is one million.
+- `range(start, end[, step])` returns an inclusive numeric range. Positive steps ascend, negative steps descend, and zero step is an error. The maximum length is one million.
+- `zip(a, b, ...)` returns tuples truncated to the shortest input.
+- `chunk(array, size)` returns chunks of at most `size` elements. Size must be positive; allocation arithmetic is checked for extremes.
+
+```hyperex
+repeat("ab", 3)
+```
+
+```text
+["ab", "ab", "ab"]
+```
+
+```hyperex
+range(5, 1, -2)
+```
+
+```text
+[5, 3, 1]
+```
+
+```hyperex
+chunk([1, 2, 3, 4, 5], 2)
+```
+
+```text
+[[1, 2], [3, 4], [5]]
+```
+
+### 8.2. Filtering and extracting
+
+- `compact(array)` removes only nil values.
+- `truthy(array)` removes all falsy values.
+- `pluck(array, key)` extracts that key from map elements and skips elements where it is absent.
+- `keys(map)` returns sorted string keys.
+- `values(map)` returns values in the same sorted key order, making `zip(keys(m), values(m))` deterministic.
+
+### 8.3. Grouping and sorting
+
+`groupBy(array, keyFn)` calls `keyFn(element)`, converts the result to a string key, and returns groups in first-seen order:
+
+```hyperex
+groupBy(users, u => u.role)
+```
+
+Each result has the form `{key: "role", items: [...]}`.
+
+`sortBy(array, keyFn[, desc])` computes one key per element, then sorts with `Compare`. Descending order still returns false for equal keys in both comparison directions. It does not promise a stable sort.
+
+### 8.4. Scalar utilities
+
+- `clamp(v, min, max)` keeps an all-int path or uses float.
+- `between(v, min, max)` is inclusive on both ends.
+- `hasKey(map, key)` tests key presence.
+- `empty(x)` is true only for nil, empty string, empty array, or empty map. Zero and `false` are not “empty”.
+- `notEmpty(x)` negates `empty`.
+- `default(v, fallback)` returns fallback only when `v` is nil.
+- `coalesce(...)` returns the first non-nil argument or nil.
+- `print(...)` prints and returns nil. It is normally denied in secure presets.
+- `sprintf(format, ...)` uses Go formatting.
+
+### 8.5. JSON
+
+`toJSON(value)` uses `encoding/json` marshaling. Unsupported values and non-finite floats return errors. Map key output follows Go JSON ordering.
+
+`fromJSON(text)` parses JSON and then converts whole numeric values to `int64` only when `|n| <= 2^53-1`, the exact-integer range of float64. Larger values stay float to avoid inventing precise integers that were already lost during parsing.
+
+```hyperex
+fromJSON("{\"x\":42}")
+```
+
+```text
+{"x": 42}
 ```
 
 ---
 
-## 6. Lambdas (`=>`, `#`, `$n`)
+## 9. Time, duration, and process quality
 
-### 6.1. Syntax
+### 9.1. Instants and durations
 
-```text
-x => body
-(x, y) => body
-() => body
-```
+There is no `now()` built-in. The host must provide wall clock explicitly, which keeps expressions deterministic and testable.
 
-Parameters are identifiers. The body is a single expression.
+| Name | Purpose |
+|---|---|
+| `timeUTC(y, m, d, h, min, s)` | Construct a UTC instant |
+| `timeUnix(sec)` | Construct from Unix seconds |
+| `timeUnixNano(ns)` | Construct from Unix nanoseconds |
+| `unix(t)` / `unixNano(t)` | Extract integer seconds/nanoseconds |
+| `timeYear`, `timeMonth`, `timeDay` | UTC calendar fields |
+| `timeHour`, `timeMinute`, `timeSecond` | UTC clock fields |
+| `timeWeekday(t)` | Sunday `0` through Saturday `6` |
+| `timeAdd(t, d)` | Add a duration |
+| `durationSeconds`, `durationMs`, `durationNs` | Construct a duration |
+| `durSeconds(d)` | Floating-point seconds |
+| `durMs(d)` / `durNs(d)` | Integer milliseconds/nanoseconds |
 
-### 6.2. Implicit arguments
+All calendar fields are UTC. Time zones are not preserved. `timeUTC` follows Go `time.Date` normalization rather than performing a separate calendar-validation layer.
 
-Inside a lambda:
+Temporal arithmetic:
 
-| Name | Meaning |
-|------|---------|
-| `#` | first argument |
-| `$0`, `$1`, … | arguments by index (`$0` ≡ first) |
+- `time + duration` and `duration + time` produce time.
+- `time - duration` produces time.
+- `time - time` produces duration.
+- Durations support `+`, `-`, `* number`, `/ number`, and unary `-`.
+- Adding two times or negating time is an error.
+- Duration overflow is checked and returns an error instead of wrapping.
 
-```text
-[1,2,3] | map(x => x * 2)
-[1,2,3] | map(# * 2)
-[1,2,3] | map($0 * 2)
-reduce(arr, (acc, x) => acc + x, 0)
-```
+### 9.2. Quality maps `{v, q}`
 
-### 6.3. Passing to HO functions
-
-Builtins `map`/`filter`/`reduce`/`find`/`findIndex`/`groupBy`/`sortBy` and forms
-`all`/`any`/`none`/`one`(arr, pred) expect `kindFunc`. Callback signatures — §8.
-
-The arrow `->` is **not** a lambda (dead token).
-
----
-
-## 7. Let and destructuring
-
-### 7.1. Simple `let`
-
-```text
-let x = value; body
-let x = value          // without ';': body = the value itself (result is value)
-```
-
-The binding is visible in `body`. This is an expression, not a statement.
-
-```text
-let x = 10; x * 2          → 20
-let name = "a"; upper(name) → "A"
-```
-
-### 7.2. Map destructuring
-
-```text
-let {a, b: alias, c = def} = obj; body
-let {a} = obj          // without ';': body = the value itself (as with simple let)
-```
-
-- `;` is optional (as with simple `let`): no `;` → result is value; with `;` → body is parsed.
-- `b: alias` — rename.
-- `c = def` — default when absent / nil (destructuring default semantics).
-
-### 7.3. Array destructuring
-
-```text
-let [a, b = def] = arr; body
-let [a] = arr          // without ';': body = value
-```
-
-- `;` is optional (symmetric with `let` / object destructure).
-- Uses optional-index semantics for missing elements.
-
-### 7.4. ReadOnly sandbox
-
-With `Sandbox.ReadOnly`, writes via `opStoreVar` are forbidden → `let`/destructuring fail with `ErrAssignmentNotAllowed`. This is an **engine option**, not syntax (§11).
-
----
-
-## 8. Built-in functions
-
-Catalog from unexported `defaultBuiltins()` — **100** names. Public discovery: `BuiltinNames()` (sorted copy) and `IsBuiltin(name)`. There is no public `DefaultBuiltins` map API.
-
-Below: name, signature, behavior/edges. `HO` = requires a `kindFunc` callback.
-
-### 8.1. Math (12)
-
-| Name | Signature | Behavior / edges |
-|------|-----------|------------------|
-| `abs` | `(x)` | abs; `MinInt64` → float |
-| `min` | `(…)` or `([arr])` | empty arr → nil; via `Compare` |
-| `max` | same | |
-| `ceil` | `(x)` | usually int64; NaN/Inf/out of int64 → float |
-| `floor` | `(x)` | same |
-| `round` | `(x)` | same |
-| `sqrt` | `(x)` | float |
-| `pow` | `(a, b)` | float (`math.Pow`) |
-| `log` | `(x)` | float |
-| `exp` | `(x)` | float |
-| `sin` | `(x)` | float |
-| `cos` | `(x)` | float |
-
-### 8.2. String / length (13)
-
-| Name | Signature | Behavior / edges |
-|------|-----------|------------------|
-| `len` | `(x)` | runes for string; len arr/map; otherwise 0 |
-| `upper` | `(x)` | via `.String()` (coercion) |
-| `lower` | `(x)` | same |
-| `trim` | `(s)` | TrimSpace |
-| `trimLeft` | `(s)` or `(s, cutset)` | default cutset `" \t\n\r"` |
-| `trimRight` | same | |
-| `split` | `(s, sep)` | → array of strings |
-| `join` | `(arr, sep)` | arr required |
-| `contains` | `(s, sub)` | **strings only** (via `.String()`); ≠ operator `in` |
-| `startsWith` | `(s, pre)` | |
-| `endsWith` | `(s, suf)` | |
-| `replace` | `(s, old, new)` | ReplaceAll |
-| `substr` | `(s, start[, len])` | by runes; negative start from end |
-| `indexOf` | `(s, sub)` | rune index; miss → `-1` |
-
-### 8.3. Array (9 + array utilities from §8.7)
-
-| Name | Signature | Behavior / edges |
-|------|-----------|------------------|
-| `first` | `(arr)` | empty → nil |
-| `last` | `(arr)` | empty → nil |
-| `take` | `(arr, n)` | n clamped |
-| `skip` | `(arr, n)` | n clamped |
-| `reverse` | `(arr)` | new array |
-| `sort` | `(arr)` | `Compare`; ops counted |
-| `unique` | `(arr)` | stable key + type; cycle-safe |
-| `concat` | `(…)` | arrays flatten one level; non-array as element |
-| `flatten` | `(arr)` | max depth 100 |
-
-### 8.4. Aggregation (7)
-
-`all` / `any` / `none` / `one` have **two forms**:
-
-1. **`(arr)`** — truthiness of array elements (historical form).
-2. **`(arr, pred)`** — HO: `pred` must be `kindFunc` (lambda / builtin / custom).
-   Callback as for `filter`/`map`: `pred(elem)` or `pred(elem, index)`; result inspected by truthiness.
-   Wrong `pred` type → `ErrInvalidType`. Arity only 1 or 2 → otherwise `ErrArgumentCount`.
-   Sandbox accounting: `sandboxLoopCheck` on each element.
-
-**Empty array** (both forms): `all` → true; `any` → false; `none` → true; `one` → false.
-
-| Name | Signature | Behavior / edges |
-|------|-----------|------------------|
-| `sum` | `(arr)` | int while no overflow, else float |
-| `avg` | `(arr)` | empty → nil; float |
-| `count` | `(x)` | like `Len` |
-| `all` | `(arr)` / `(arr, pred)` | all truthy / all satisfy pred |
-| `any` | `(arr)` / `(arr, pred)` | some truthy / some satisfy pred |
-| `none` | `(arr)` / `(arr, pred)` | no truthy / none satisfy pred |
-| `one` | `(arr)` / `(arr, pred)` | exactly one truthy / exactly one satisfies pred |
-
-### 8.5. Higher-order (5 + groupBy/sortBy/pluck in §8.7)
-
-Also HO: `all`/`any`/`none`/`one`(arr, pred) — see §8.4.
-
-| Name | Signature | Callback arguments |
-|------|-----------|--------------------|
-| `map` | `(arr, fn)` | `(elem, index)` |
-| `filter` | `(arr, fn)` | `(elem, index)`; keep if truthy |
-| `reduce` | `(arr, fn[, init])` | `(acc, elem, index)`; empty without init → nil |
-| `find` | `(arr, fn)` | miss → nil |
-| `findIndex` | `(arr, fn)` | miss → **−1** |
-
-### 8.6. Type (6)
-
-| Name | Signature | Behavior / edges |
-|------|-----------|------------------|
-| `int` | `(x)` | `Try*`; invalid → RuntimeError |
-| `float` | `(x)` | same |
-| `string` | `(x)` | stringify |
-| `bool` | `(x)` | truthiness |
-| `type` | `(x)` | kind name (string) |
-| `isNil` | `(x)` | `kind == nil` |
-
-### 8.7. Utility / collection (19)
-
-| Name | Signature | Behavior / edges |
-|------|-----------|------------------|
-| `print` | `(…)` | println; returns **nil** |
-| `sprintf` | `(fmt, …)` | formatting |
-| `keys` | `(map)` | keys **sorted** (lexicographic string order) |
-| `values` | `(map)` | values in the **same sorted key order** as `keys` |
-| `clamp` | `(v, min, max)` | int path if all int, else float |
-| `between` | `(v, min, max)` | inclusive via `Compare` |
-| `hasKey` | `(map, key)` | |
-| `empty` | `(x)` | true for nil / `""` / `[]` / `{}`; numbers/bool are **not** empty |
-| `notEmpty` | `(x)` | `!empty` |
-| `default` | `(v, d)` | if `v` is nil → `d` |
-| `coalesce` | `(…)` | first non-nil; all nil → nil |
-| `repeat` | `(v, n)` | max 1e6 |
-| `range` | `(start, end[, step])` | **inclusive**; step≠0; max 1e6 |
-| `zip` | `(arr, arr, …)` | by min length; tuples |
-| `chunk` | `(arr, size)` | size>0; max chunks 1e6 |
-| `compact` | `(arr)` | remove **nil only** |
-| `truthy` | `(arr)` | remove nil and falsy |
-| `pluck` | `(arr, key)` | maps only; missing key skipped |
-| `groupBy` | `(arr, keyFn)` HO | `keyFn(elem)` → string; `[{key, items},…]` insertion order |
-| `sortBy` | `(arr, keyFn[, desc])` HO | numeric keys or else strings |
-| `toJSON` | `(v)` | Marshal |
-| `fromJSON` | `(s)` | Unmarshal; safe int → int64 (§3.5: \(|n| \le 2^{53}-1\)) |
-
-### 8.8. Time / duration (20)
-
-No `now()` — host puts wall clock in the env. All calendar fields are **UTC**.
-
-| Name | Signature | Behavior / edges |
-|------|-----------|------------------|
-| `timeUTC` | `(y, m, d, h, min, s)` | construct UTC instant |
-| `timeUnix` | `(sec)` | from unix seconds |
-| `timeUnixNano` | `(ns)` | from unix nanoseconds |
-| `unix` / `unixNano` | `(t)` | extract int64 |
-| `timeYear` / `timeMonth` / `timeDay` | `(t)` | UTC calendar fields |
-| `timeHour` / `timeMinute` / `timeSecond` | `(t)` | UTC clock fields |
-| `timeWeekday` | `(t)` | Sunday=0 … Saturday=6 (Go) |
-| `timeAdd` | `(t, d)` | same as `t + d` |
-| `durationSeconds` / `durationMs` / `durationNs` | `(n)` | construct duration |
-| `durSeconds` | `(d)` | float seconds |
-| `durMs` / `durNs` | `(d)` | int64 extract |
-
-### 8.9. Quality (6) — map-shaped `{v,q}`
-
-No new runtime kind. Host binds a process value as a map:
+Process values can be represented as a map with value and quality code:
 
 ```go
-env["temp"] = map[string]any{"v": 12.5, "q": float64(0)} // or int64 / uint32
-```
-
-Class bits use exported `QualityClassMask` (`0xC0000000`) — OPC UA StatusCode–compatible convention: Good `(code&mask)==0`, Uncertain `==0x40000000`, Bad `==0x80000000`.
-
-| Name | Signature | Behavior / edges |
-|------|-----------|------------------|
-| `v` | `(x)` | map with key `"v"` → that value; bare number/bool/string/time/duration/array → `x`; `nil`→`nil`; else error |
-| `q` | `(x)` | map with key `"q"` → numeric q; bare number → itself; else error |
-| `isGood` / `isBad` / `isUncertain` | `(x)` | map `{…,q}` **or** bare qcode number; class bits via `QualityClassMask` |
-| `withQ` | `(val, qcode)` | → map `{v,q}` (`q` as int64 or float64) |
-
-**No arithmetic auto-unwrap:** `temp + 1` on a map keeps failing. Formulas must use `v(temp) + 1`.
-
-### 8.10. Full name list (for scanning)
-
-```text
-# Math
-abs min max ceil floor round sqrt pow log exp sin cos
-
-# String / length
-len upper lower trim trimLeft trimRight split join
-contains startsWith endsWith replace substr indexOf
-
-# Array
-first last take skip reverse sort unique concat flatten
-
-# Aggregation
-sum avg count all any none one
-
-# Higher-order
-map filter reduce find findIndex
-
-# Type
-int float string bool type isNil
-
-# Utility
-print sprintf keys values clamp between hasKey empty notEmpty
-default coalesce repeat range zip chunk compact truthy pluck
-groupBy sortBy toJSON fromJSON
-
-# Time / duration
-timeUTC timeUnix timeUnixNano unix unixNano
-timeYear timeMonth timeDay timeHour timeMinute timeSecond timeWeekday
-timeAdd durationSeconds durationMs durationNs durSeconds durMs durNs
-
-# Quality
-v q isGood isBad isUncertain withQ
-```
-
-`DisableBuiltins` on the engine clears this set at init (custom functions can still be added) — host option, §11.
-
----
-
-## 9. Pipe `|` vs bitwise OR
-
-One token `|`, two semantics. The parser chooses by **AST shape** (heuristic).
-`Analyze` / `Analysis.Warnings` reports true ambiguity and pipe-by-builtin-name.
-
-### 9.1. Rules
-
-1. **Integer/float literal** on either side → **never PIPE** (always bitwise OR).
-2. Left ∈ {`arrayLit`, `call`, `member`, `index`, `slice`, `pipe`, `range`, `stringLit`} **and** right ∈ {`ident`, `call`} → **PIPE**
-3. Left `ident` **and** right `call` → **PIPE**  
-   Example: `data | filter(...)`
-4. Left `ident` **and** right `ident` whose name matches a **default builtin** key (`sum`, `map`, `filter`, `trim`, `len`, `unique`, … — the same set as `defaultBuiltins`) → **PIPE**  
-   Example: `xs | sum`, `data | unique`. Bitwise with such names is rare; force: `let a = xs; let b = mask; a | b`.
-5. Otherwise left `ident` **and** right `ident` → **BITWISE OR**  
-   Example: `x | y`, `flags | MASK`
-
-### 9.2. Examples
-
-| Expression | Interpretation |
-|------------|----------------|
-| `[1,2,3] \| sum` | pipe |
-| `" hi " \| trim` | pipe |
-| `arr \| map(x => x+1)` | pipe |
-| `data \| filter(f)` | pipe (ident \| call) |
-| `arr \| sum` | pipe (ident \| builtin-name) |
-| `data \| unique` | pipe (ident \| builtin-name) |
-| `x \| y` | **bitwise OR** (+ warning) |
-| `flags \| MASK` | **bitwise OR** (+ warning) |
-| `1 \| 2` | bitwise (literals) |
-| `a.b \| f` | pipe (member \| ident) |
-
-### 9.3. How to force the intended meaning
-
-| Goal | Technique |
-|------|-----------|
-| Force **bitwise** when the right-hand is a builtin name | Intermediate variables: `let a = xs; let b = mask; a \| b` |
-| Force **pipe** when both are arbitrary idents | Explicit call: `x \| transform()` instead of `x \| transform` |
-
-### 9.4. Warnings (`Analysis.Warnings`)
-
-Stable English messages (also exported as `WarnAmbiguousBitwiseOr` / `WarnBuiltinNamePipe` for matching without hardcoding):
-
-| Condition | Constant | Message (sense) |
-|-----------|----------|-----------------|
-| bitwise `\|` between two idents, right-hand **not** a default builtin | `WarnAmbiguousBitwiseOr` | ambiguous \| … treated as bitwise OR |
-| pipe chosen by “right-hand ident = default builtin” rule | `WarnBuiltinNamePipe` | pipe chosen because right-hand identifier matches a default builtin name |
-
-`Analysis.Warnings` remains `[]string` (same English strings).
-
-### 9.5. Antipatterns
-
-```text
-// Both arbitrary idents → bitwise OR (if you wanted pipe — write a call):
-xs | transform          // bitwise; Analyze will warn
-xs | transform()        // pipe
-
-// Builtin name on the right → pipe (force bitwise via intermediate names):
-xs | sum                // pipe
-let a = xs; let b = m; a | b   // bitwise
-
-// Pipe chains are usually OK:
-xs | filter(# > 0) | map(# * 2) | sum
-```
-
----
-
-## 10. What the language does not have
-
-Explicit syntax non-goals:
-
-| Absent | Use instead |
-|--------|-------------|
-| Statement language, `{stmt;…}` blocks | single expression |
-| `if` / `else` / `while` / `for` / `return` as statements | ternary, `??`, `&&`/`\|\|`, HO |
-| Loop statements | `map`/`filter`/`reduce`, `range`/`..` |
-| General assignment `=` | only `let` / destructuring |
-| Unary `+`, `++`/`--`, `->` | — |
-| Optional call `fn?.()` | — |
-| Spread in map / in call | spread only in array lit |
-| Regex literals | only `~=` with a string pattern |
-| Classes, modules, import | — |
-| Multiple expressions in one unit | one expr through EOF |
-
-Tools `Simplify` / `Analyze` / `Extract*` / `Validate` / `Walk` / `Transform` / `Parse` / `Tokenize` are an **API over the AST / token stream**, not part of the language.
-
-- `Parse(expr) (Node, error)` — opaque root node for `Walk` / `Transform` / `ASTToString` (concrete AST types stay unexported).
-- `Tokenize(src) ([]Token, error)` — stable public kinds for highlighting (`Ident`, `Number`, `String`, `Operator`, `Keyword`, `Punct`, `Comment`, `EOF`, `Illegal`).
-- `ExtractVariables` keeps historical behavior (`Alarm.Fire` lists both `Alarm` and `Fire`). `ExtractVariablesOpts(expr, ExtractMemberRoots())` lists member roots only (`Alarm`).
-
----
-
-## 11. Effect of engine options on semantics
-
-Everything below is **not language syntax**, but host configuration. It changes the execution environment or compilation, not the grammar.
-
-| Option / mode | Effect on observable semantics |
-|---------------|--------------------------------|
-| `WithSandbox` / limits | `MaxOps`, `Timeout`, `MaxMemory` (periodically), `MaxStackDepth` / `MaxCallDepth` — abort long computations |
-| `AllowedFuncs` / `DeniedFuncs` | allow/deny calls by **name**; deny wins |
-| **Secure** (`WithSecureSandbox`) | env → JSON-like **plus** `time.Time` / `time.Duration`; forbid member/index/slice/`in` on `kindAny`; forbid calling unnamed Go functions from env; other structs rejected. Best-effort only — not process isolation |
-| `ReadOnly` | forbid `let`/destructuring (`ErrAssignmentNotAllowed`) |
-| `DisableBuiltins` | empty default builtins set at init |
-| `WithStrictMode` | strict conversions: typed `Eval*` / some numeric paths → `ErrInvalidConversion` instead of silent coerce |
-| `WithNumericMode(NumericFloat64)` | numeric `+,-,*,/,%,**` and unary `-` → `float64` result (`1/2` → `0.5`); string `+` and time/duration ops unchanged. Default `NumericDefault` = v1.0 int-preserving arithmetic |
-| `WithNonFinite(NonFiniteError)` | successful Eval must not return NaN/Inf; error matches `ErrNonFinite`. Default `NonFiniteAllow` |
-| `WithMaxSourceBytes(n)` | `Compile` rejects `len(expr) > n` with `ErrSourceTooLarge` (`n <= 0` = unlimited) |
-| `AsBool` / `AsInt` / `AsFloat` / `AsString` | compile hints; `Program.ResultHint()` reflects them; Eval converts the result |
-| `Program.EvalValue` | returns `Value` without `Interface()` boxing (additive; `Eval` unchanged) |
-| `WithOperator(op, fnName)` | overload binaries (while preserving short-circuit of `&&`/`\|\|`) — changes compilation path |
-| `WithFunction(s)` | add host functions (**trusted** escape hatch — no forced MaxOps tax; may do arbitrary I/O) |
-| `WithSafeFunction` / `WithSafeFunctionMeta` | host functions that **count against MaxOps** (default tax 16 per call); DeniedFuncs/AllowedFuncs apply by name; Pure is docs-only |
-| `ctx` cancel / sandbox timeout | whichever fires first wins |
-
-The sandbox does **not** provide process isolation and does not make arbitrary `WithFunction` “safe”. Prefer `WithSafeFunction` for domain helpers under Secure + MaxOps.
-
----
-
-## 12. Pitfalls
-
-Numbered list (inventory §8):
-
-1. **`|` pipe vs bitwise** — heuristic §9; `x | y` is OR, `xs | sum` / `x | f()` is pipe. See `Analysis.Warnings`.
-2. **`??` has prec 12 (higher than `+`)** — `a + b ?? c` ≡ `a + (b ?? c)`, not `(a + b) ?? c`.
-3. **`&&` / `||` return an operand** (not bool). Do not confuse with `!`, which always yields bool.
-4. **`nil`** — string representation is `"nil"`.
-5. **Dead lexemes** `if`/`else`/`++`/`--`/`->` — reserved/noise with no semantics.
-6. **`contains` ≠ `in`** — builtin is strings-only (via stringify); `in` works more broadly with collections/substrings.
-7. **`all` / `any` / `none` / `one`** — two forms: `(arr)` = element truthiness; `(arr, pred)` = HO predicate (`kindFunc`, like `filter`). Do not confuse the forms.
-8. **`keys` / `values`** for maps are ordered by **sorted string keys** (deterministic).
-9. **`equal` / `Compare` on float/NaN/incomparables** — bit equality; for incomparables Compare yields −1.
-10. **Integer division** truncates toward zero (default); under `NumericFloat64`, `1/2` → `0.5`. Mixed `+` with non-number/non-string/non-array → error.
-11. **Strict mode** / **NumericMode** / **NonFinite** — host options; change conversion/arithmetic/result policy, not the grammar.
-12. **`#` and `$n` in lambdas** — part of the language, easy to miss in a “bare” grammar.
-13. **Broken numeric lexemes** (`0x`, `1e`) — lexer may accept, parser rejects.
-14. **`upper` / `lower` / `contains`** coerce via `.String()` — non-strings “work” via formatting.
-15. **`WithOperator`** — host feature; changes compilation of binary operators.
-16. **Public name `DefaultBuiltins` does not exist** — say “default builtin set” / `defaultBuiltins`.
-17. **Chain `1..2..3`** — left-assoc `(1..2)..3`; non-int start coerces via `Int()` (often → `0..n`).
-18. **Quality maps are not numbers** — `temp + 1` fails; write `v(temp) + 1`. Class checks: `isGood(temp)` or bare `isGood(qcode)`.
-
----
-
-## 13. Cookbook — SCADA quality bindings
-
-Two host binding shapes work with the same builtins:
-
-```text
-// Separate value + qcode channels:
-env["temp"] = 12.5
-env["temp_q"] = 0x00000000   // Good qcode
-
-// Map-shaped process value:
 env["temp"] = map[string]any{"v": 12.5, "q": float64(0)}
+```
+
+The quality class uses the OPC UA–compatible top two bits:
+
+- Good: `(code & 0xC0000000) == 0`
+- Uncertain: `== 0x40000000`
+- Bad: `== 0x80000000`
+
+| Name | Behavior |
+|---|---|
+| `v(x)` | Extract `x["v"]`; primitive values pass through; nil gives nil |
+| `q(x)` | Extract numeric `x["q"]`; a bare number is itself a qcode |
+| `isGood(x)` | Test Good class on a map or bare qcode |
+| `isBad(x)` | Test Bad class |
+| `isUncertain(x)` | Test Uncertain class |
+| `withQ(value, qcode)` | Build `{v: value, q: qcode}` |
+
+Quality maps are not numbers and are not automatically unwrapped:
+
+```hyperex
+temp + 1 // wrong when temp is {v, q}
+```
+
+Use:
+
+```hyperex
+isGood(temp) ? v(temp) + 1 : v(backup)
+```
+
+Quality codes must be finite and fit `uint32`. Negative and out-of-range codes are rejected.
+
+---
+
+## 10. Numeric semantics in depth
+
+### 10.1. Default numeric mode
+
+`NumericDefault` preserves integers where possible:
+
+- `int + int`, `int - int`, and `int * int` return int unless signed 64-bit overflow occurs, in which case they return float.
+- Integer `/` truncates toward zero; mixed numeric arithmetic returns float.
+- `%` supports integer remainder and `math.Mod` for other numeric forms.
+- `**` tries exact non-negative integer exponentiation before using float.
+- `sum` similarly starts with integers and switches to float on overflow or a non-integer input.
+
+```hyperex
+1 / 2
+```
+
+```text
+0 // int
+```
+
+### 10.2. Float-first numeric mode
+
+`WithNumericMode(NumericFloat64)` makes numeric `+`, `-`, `*`, `/`, `%`, `**`, and unary `-` return float. String concatenation and temporal arithmetic are unchanged.
+
+```hyperex
+1 / 2
+```
+
+```text
+0.5
+```
+
+The TypeChecker uses the engine's numeric mode when inferring types. Optimizer transformations must preserve the same type and error behavior as the unoptimized VM.
+
+### 10.3. Non-finite results
+
+`NonFiniteAllow` permits NaN and infinity. `NonFiniteError` rejects non-finite float results and non-finite values produced by arithmetic or built-ins before successful return. `sqrt(-1)`, overflowing float arithmetic, and final typed float conversion are covered.
+
+The check is **not a recursive scan** of every value nested inside arrays and maps. If nested non-finite data matters, validate it at the host boundary or in domain code.
+
+Constant folding must not hide this policy: an intermediate infinity cannot be folded into a final `true` or `false` to bypass `NonFiniteError`.
+
+### 10.4. Strict conversion mode
+
+`WithStrictMode(true)` makes invalid conversions return `ErrInvalidConversion` instead of silently using zero values. `TryBool` and `TryString` accept only their exact kinds. `TryInt` and `TryFloat` allow documented numeric conversions.
+
+Strict mode is not a complete static type system and does not forbid string concatenation. For example, string `+` remains string concatenation when either operand is a string.
+
+### 10.5. Optimizer equivalence
+
+Optimization is enabled by default and includes constant folding, strength reduction, algebraic simplification, and dead-code elimination. `Unoptimized()` disables optimization for one compilation. `WithConstantFolding(false)` disables only literal folding while leaving other optimization passes enabled.
+
+These options are useful for debugging and differential testing, not as a promise that optimized and unoptimized operation counts or timing will match. Semantic results, error classes, and numeric types are expected to agree.
+
+---
+
+## 11. Host options, security, and resource limits
+
+### 11.1. The trust boundary
+
+Secure mode is a best-effort execution policy, **not operating-system isolation**. Do not run arbitrary native code inside a HyperEx sandbox and expect process-level containment.
+
+`WithFunction` registers trusted Go code. It can perform I/O, allocate, panic recovery notwithstanding, and consume time outside the VM's operation budget. Prefer `WithSafeFunction` or `WithSafeFunctionMeta` when host work should carry an explicit operation tax.
+
+SafeFunction metadata does not measure wall-clock work. `MaxOwnOps` is a declared tax, and `Pure` is documentation only.
+
+### 11.2. Sandbox limits
+
+| Setting | Meaning and caveat |
+|---|---|
+| `MaxOps` | Aborts after an approximate operation budget; loop accounting can be batched |
+| `Timeout` | Wall-clock execution deadline; independent of context deadline |
+| `MaxMemory` | Approximate, periodically estimated memory; not a hard heap-allocation cap |
+| `MaxStackDepth` | Bounds VM operand stack growth |
+| `MaxCallDepth` | Bounds nested function/lambda calls; sandbox value takes precedence over engine default |
+| `AllowedFuncs` | Name allowlist; if configured, other names are denied |
+| `DeniedFuncs` | Name denylist and takes precedence over allowlist |
+| `ReadOnly` | Rejects `let` and destructuring with `ErrAssignmentNotAllowed` |
+| `DisableBuiltins` | Starts with an empty default built-in set; custom functions can still be registered |
+
+Both `..` and `range(...)` participate in operation and cancellation checks. Higher-order callbacks inherit the same cumulative budget rather than receiving a fresh one per element.
+
+### 11.3. Secure environment conversion
+
+Secure accepts JSON-like values plus `time.Time` and `time.Duration`. It recursively validates arrays and maps, including values already wrapped with `hyperex.Array` or `hyperex.Map`.
+
+It rejects arbitrary structs, pointers, functions, channels, and other external Go objects. It also forbids reflection-based member access, indexing, slicing, membership testing, and calls to unnamed Go functions.
+
+Environment conversion itself can be expensive and is only periodically budgeted. Do not treat Secure as a guarantee that every allocation happens under `MaxMemory`.
+
+### 11.4. Context and timeouts
+
+Every evaluation accepts a context. Nil context means `context.Background()`, although an explicit context is preferable. `ErrOperationCancelled` is used for context cancellation; `ErrTimeout` is used for the sandbox deadline. Whichever is observed first wins.
+
+Checks happen on VM entry, during bytecode execution, inside loops, and after host callbacks. A trusted host function that never returns still cannot be forcibly killed by context; use process-level isolation when that is required.
+
+### 11.5. Compilation and evaluation options
+
+- `WithMaxSourceBytes(n)` rejects oversized source with `ErrSourceTooLarge`; `n <= 0` means unlimited.
+- `WithMaxCallDepth(n)` changes the engine default, with a sandbox override when explicitly configured.
+- `WithOperator(op, fnName)` compiles a binary operator as a host-function call. Short-circuit `&&` and `||` are not overloaded this way.
+- `WithTypeCheck(env)` enables best-effort compile-time checks. Unknown or `any` types remain permissive for dynamic environments; it is not a proof of runtime success.
+- `AsBool`, `AsInt`, `AsFloat`, and `AsString` are compile hints converted on every evaluation. `ResultHint()` exposes the selected hint.
+- `Program.Profile` evaluates with the same Secure policy and result conversion as normal evaluation, while recording wall time, operation count, and maximum stack depth.
+
+### 11.6. Presets
+
+`NewSecureCalc` and `NewSecureAuto` assemble common policies: Secure, operation and timeout limits, restricted call depth, read-only evaluation, denied `print`, `NumericFloat64`, and `NonFiniteError`. `NewSecureAuto` uses tighter budgets and also denies JSON conversion functions. Extra options are applied afterward and can deliberately replace parts of a preset, so review the final option order.
+
+---
+
+## 12. Studio and source-level tools
+
+Studio APIs help editors and linters; they are not additional language syntax.
+
+### 12.1. `Tokenize` and `Parse`
+
+`Tokenize` returns stable public token kinds: `Ident`, `Number`, `String`, `Operator`, `Keyword`, `Punct`, `Comment`, `EOF`, and `Illegal`. Tokens include byte offset, line, and column.
+
+`Parse` returns an opaque `Node`. Concrete AST node types remain private. Use `Walk`, `Transform`, and `ASTToString` rather than depending on internal node layouts.
+
+### 12.2. `Analyze`
+
+`Analyze` reports identifiers, called functions, operators, AST depth, estimated complexity, assignments, optional chaining, coalescing, and warnings. Complexity and estimated cost are heuristics, not runtime proof.
+
+`IsPure` only models known side-effecting built-ins. It does not prove that an arbitrary custom function is pure. Identifier lists can include function names and binding names; use `ExtractMemberRoots` when you specifically want `Alarm` from `Alarm.Fire`.
+
+`ProfileExpr` and `Program.Profile` measure actual wall time and VM operations for one evaluation.
+
+### 12.3. `Simplify`
+
+`Simplify` parses, applies literal and algebraic rewrites, and prints an expression. It does not call host functions. It avoids emitting non-finite source literals that cannot be parsed back; where necessary, the original arithmetic form is retained.
+
+`ASTToString` handles computed map keys, postfix precedence, lambdas, nested unary expressions, integer extremes, float type preservation, and non-finite expressions. Round-trip tests should compare semantics, not only whether parsing succeeds.
+
+### 12.4. `Inline`
+
+`Inline` substitutes only closed literal bindings: scalar literals and arrays/maps containing only closed literals. Other bindings remain in place. This deliberately avoids:
+
+- duplicated host calls;
+- capture by lambda parameters;
+- removal of mandatory errors;
+- changed behavior from free identifiers;
+- incorrect shadowing by nested `let` or destructuring.
+
+It is a conservative source transformation, not a general evaluator.
+
+### 12.5. `Expand`
+
+`Expand` substitutes named macros with parsed AST definitions. It respects lexical bindings and does not replace non-computed property names after `.`. Macro replacement is a one-pass expansion rather than a recursive interpreter, and replacements are copied to avoid sharing mutable AST nodes.
+
+### 12.6. Type checking and validation
+
+`Validate` checks syntax. `ValidateWithEnv` adds best-effort environment types. `CheckExpressionType` compares inferred and expected types. Function signatures include arity, parameter types, variadic arguments, and numeric widening from int to float. Pipe calls include the inserted left argument during checking.
+
+The checker accepts truthiness and dynamic `any`/`unknown` values. It does not prove that an unknown variable exists at runtime or that a dynamic callback is side-effect free.
+
+---
+
+## 13. Errors and failure handling
+
+### 13.1. Error families
+
+Use `errors.Is` for sentinels and `errors.As` for structured error types:
+
+- `LexerError` and `ParseError`: source location and formatted context.
+- `CompileError`: AST-to-bytecode failure.
+- `TypeError` and `TypeCheckErrors`: static type diagnostics; multiple errors expose the first through `Unwrap`.
+- `RuntimeError`: evaluation failure, optional source, expected/got types, and an underlying cause.
+- `UndefinedError`: missing variable or function with name and kind.
+- `SandboxError`: limit or access violation with `Type`, `Limit`, `Actual`, and a cause.
+
+`RuntimeError.Offset`, `Line`, and `Column` are zero when unknown. Current AST nodes do not carry full runtime source maps, so runtime locations are often unknown.
+
+### 13.2. Common sentinels
+
+| Sentinel | Typical cause |
+|---|---|
+| `ErrDivisionByZero` | `/` or `%` by zero |
+| `ErrIndexOutOfBounds` | Invalid array/string index |
+| `ErrNotCallable` | Calling a non-function |
+| `ErrArgumentCount` | Wrong arity, including pipe-adjusted calls |
+| `ErrInvalidType` | Wrong built-in argument kind |
+| `ErrNotIndexable` | Indexing an unsupported kind |
+| `ErrInvalidSliceIndex` | Zero step or invalid bounds |
+| `ErrInvalidRegex` | Invalid RE2 pattern |
+| `ErrMaxCallDepth` | Nested calls exceed policy |
+| `ErrOperationCancelled` | Context cancellation/deadline |
+| `ErrInvalidConversion` | Strict conversion failure |
+| `ErrNonFinite` | NaN/Inf under `NonFiniteError` |
+| `ErrSourceTooLarge` | Source exceeds configured byte limit |
+| `ErrOpsLimitExceeded` | Operation budget exhausted |
+| `ErrMemoryLimitExceeded` | Estimated memory exceeds policy |
+| `ErrTimeout` | Sandbox deadline elapsed |
+| `ErrFunctionNotAllowed` | Allow/deny or Secure function restriction |
+| `ErrAssignmentNotAllowed` | `let` under read-only policy |
+| `ErrStackOverflow` | VM operand stack exceeds policy |
+
+Do not parse error strings when a sentinel or structured type is available. Panics from trusted host callbacks become `*RuntimeError`; `MustCompile` and `MustEval` panic by contract and should be used only where failure is a programmer error.
+
+---
+
+## 14. Practical recipes
+
+### 14.1. Validation
+
+```hyperex
+let name = form.name ?? "";
+let email = form.email ?? "";
+let age = form.age ?? 0;
+let errors = [];
+let errors = len(name) < 2 ? [...errors, "Name too short"] : errors;
+let errors = !(email ~= "@") ? [...errors, "Invalid email"] : errors;
+let errors = age < 18 ? [...errors, "Must be 18+"] : errors;
+{"valid": len(errors) == 0, "errors": errors}
+```
+
+Each nested binding can shadow the previous `errors` while its initializer still sees the preceding value.
+
+### 14.2. Aggregation by key
+
+```hyperex
+let regions = unique(sales | pluck("region"));
+regions | map(r => {
+  "region": r,
+  "total": sum(sales | filter(s => s.region == r) | pluck("amount")),
+  "count": len(sales | filter(s => s.region == r))
+})
+```
+
+For complex groups, `groupBy` is often clearer:
+
+```hyperex
+groupBy(sales, s => s.region) | map(g => {
+  "region": g.key,
+  "total": sum(g.items | pluck("amount")),
+  "count": len(g.items)
+})
+```
+
+### 14.3. SCADA quality selection
+
+Two supported host shapes are a separate qcode channel and a map-shaped process value:
+
+```text
+temp = 12.5
+temp_q = 0
+```
+
+```text
+temp = {"v": 12.5, "q": 0}
 ```
 
 Formulas:
 
-```text
-isGood(temp_q) && temp > 10          // bare qcode channel
-isGood(temp) && v(temp) > 10         // map-shaped; ExtractVariables sees "temp"
-isGood(temp) ? v(temp) : v(backup)   // pick by quality class
+```hyperex
+isGood(temp_q) && temp > 10
 ```
 
-`isGood` / `isBad` / `isUncertain` accept either a bare qcode number or a map with `"q"`.
+```hyperex
+isGood(temp) ? v(temp) : v(backup)
+```
+
+Use Secure presets for operator-authored formulas and pass time explicitly.
+
+### 14.4. Hot-path evaluation
+
+1. Compile at configuration load.
+2. Reuse one `Program` concurrently.
+3. Reuse a pre-sized `map[string]any` and update values in place.
+4. Prefer `EvalValue` plus `TryFloat`, or `EvalFloat`, when the result is numeric.
+5. Avoid unnecessary higher-order callbacks and reflection-heavy struct environments per sample.
+6. Size operation and timeout budgets with headroom for real data.
+
+Runnable example: [examples/scada_hotpath/](examples/scada_hotpath/). Related: [examples/scada_secure/](examples/scada_secure/) and [examples/scada_quality/](examples/scada_quality/).
+
+### 14.5. Debugging with Studio
+
+Use `Tokenize` for highlighting, `Analyze` for names and pipe warnings, `Simplify` for conservative literal rewrites, and `Profile` for operation counts and stack depth. If optimized behavior needs investigation, compare the same expression with `Unoptimized()` rather than relying on timing alone.
 
 ---
 
-## 14. Cookbook — SCADA hot path (performance)
+## 15. Deliberate non-goals and frequent mistakes
 
-Canonical per-sample loop for integrator / PDM calc (no new public API — host-side pattern):
+| Missing feature | What to use instead |
+|---|---|
+| Statement blocks | One expression with nested `let` |
+| `if`, `while`, `for`, `return` statements | Ternary, `??`, `&&`, `||`, higher-order functions |
+| Loop statements | `map`, `filter`, `reduce`, `range`, `..` |
+| General assignment `=` | Lexically scoped `let` and destructuring |
+| Unary `+`, `++`, `--`, `->` | Arithmetic negation only where defined; lambdas use `=>` |
+| Optional call `fn?.()` | Check the value before calling |
+| Spread in maps or calls | Spread only in array literals |
+| Regex literals | `~=` with a string pattern |
+| Modules, classes, imports | Host application structure |
+| Multiple expressions in one unit | One expression through EOF |
 
-1. **Compile once** at Apply / config load → reuse `Program`.
-2. Prefer **`map[string]any`**, pre-sized; **update or clear keys** in the loop (avoid allocating a new map each tick; avoid struct env on hot path).
-3. Prefer **`EvalValue` + `TryFloat`** (or `EvalFloat`) under **`NumericFloat64`** — Secure presets (`NewSecureCalc` / `PresetSecureCalc`) already set this plus `NonFiniteError`.
-4. Avoid lambdas / higher-order builtins and unnecessary `WithFunction` on the per-sample path; size MaxOps / Timeout with headroom.
-5. There is **no** exported `BatchEval` or `EnvPool` — loop `Eval*` / `EvalValue` yourself.
+Common mistakes and their precise remedies:
 
-Runnable sketch: [examples/scada_hotpath/](examples/scada_hotpath/). Related: [examples/scada_secure/](examples/scada_secure/), [examples/scada_quality/](examples/scada_quality/). Package benches: `BenchmarkSCADA_*` in `bench_scada_test.go`.
+1. **`# + 1` is not a lambda.** Write `x => x + 1`, `# => # + 1`, or `$0 => $0 + 1`.
+2. **`&&`/`||` do not force bool.** Use `!` or an explicit comparison when a boolean is required.
+3. **`??` binds tightly.** `a + b ?? c` is `a + (b ?? c)`.
+4. **`012` is octal.** It means `10`, not decimal `12`.
+5. **Zero is not nil.** `0 ?? 42` returns `0`; `empty(0)` is false.
+6. **Float equality is bitwise.** `0.0 != -0.0`; NaN equality and ordering have the special rules in §2.
+7. **Comparison is not a mathematical chain.** Use `a < b && b < c`.
+8. **Secure is not process isolation.** Keep native callbacks outside the untrusted boundary.
+9. **SafeFunction tax is declared, not measured.** It does not bound callback wall time.
+10. **A quality map is not a number.** Use `v(temp)` for arithmetic and `q(temp)` for the code.
+11. **Map output order depends on the operation.** `keys`/`values` are sorted; other representations should not be relied upon for display ordering.
+12. **MinInt64 needs an expression.** Use `-9223372036854775807 - 1` or a host value.
+13. **Non-finite checks are not recursive.** Validate nested composite values separately if needed.
+14. **Type checking is best effort.** Unknown dynamic values are intentionally permissive.
+15. **Studio transforms are conservative.** `Inline` will retain many bindings to preserve semantics.
 
 ---
 
-## 15. Quick cheat sheet
+## 16. Compact reference
 
-### Model
+### 16.1. Core forms
 
 ```text
 one program = one expression
-condition:  c ? t : e   |   a ?? b   |   a && b   |   a || b
-binding:    let x = v; body
-lambda:     x => e  |  (a,b)=>e  |  #  |  $0
+
+binding:      let x = value; body
+lambda:       x => body  |  (a, b) => body  |  () => body
+special names: # = first argument; $0, $1, ... = positional arguments
+conditional:  condition ? then : else
+coalescing:   a ?? b
+pipeline:     value | function | function(args...)
 ```
 
-### Precedence (weak → strong)
+### 16.2. Precedence, weak to strong
 
 ```text
-or/||  →  and/&&  →  |  →  ^  →  &  →  ==!=  →  <> in ~=
-→  shifts  →  +-  →  */%  →  **  →  ??  →  ..
+or/||  →  and/&&  →  |  →  ^  →  &  →  == !=
+→  < <= > >= in not-in ~=  →  shifts  →  + -
+→  * / %  →  **  →  ??  →  ..
 ```
 
-### Value logic
+### 16.3. Value logic
+
+```hyperex
+"hi" && "bye"  // "bye"
+0 && 5         // 0
+5 || 0         // 5
+nil ?? 1       // 1
+0 ?? 1         // 0
+2 + 3 ?? 4     // 5
+```
+
+### 16.4. Built-ins by group
 
 ```text
-"hi" && "bye"  →  "bye"
-0 && 5         →  0
-5 || 0         →  5
-nil ?? 1       →  1
-0 ?? 1         →  0
-2 + 3 ?? 4     →  5
+math:       abs min max ceil floor round sqrt pow log exp sin cos
+string:     len upper lower trim trimLeft trimRight split join
+            contains startsWith endsWith replace substr indexOf
+array:      first last take skip reverse sort unique concat flatten
+aggregation: sum avg count all any none one
+higher-order: map filter reduce find findIndex
+conversion: int float string bool type isNil
+utilities:  print sprintf keys values clamp between hasKey empty notEmpty
+            default coalesce repeat range zip chunk compact truthy pluck
+            groupBy sortBy toJSON fromJSON
+time:       timeUTC timeUnix timeUnixNano unix unixNano timeYear timeMonth
+            timeDay timeHour timeMinute timeSecond timeWeekday timeAdd
+            durationSeconds durationMs durationNs durSeconds durMs durNs
+quality:    v q isGood isBad isUncertain withQ
 ```
 
-### `|`
+### 16.5. Where to go next
 
-```text
-[1,2,3] | sum     // pipe
-arr | sum         // pipe (builtin-name rule)
-x | y             // bitwise OR
-x | f()           // pipe (force)
-let a = xs; let b = m; a | b   // force bitwise
-```
-
-### Types
-
-```text
-nil bool int(int64) float(float64) string array map function any
-falsy: nil false 0 0.0 "" [] {}
-overflow int → float
-```
-
-### Builtins (groups)
-
-```text
-math:     abs min max ceil floor round sqrt pow log exp sin cos
-string:   len upper lower trim* split join contains startsWith
-          endsWith replace substr indexOf
-array:    first last take skip reverse sort unique concat flatten
-agg:      sum avg count all any none one   # + optional pred form
-HO:       map filter reduce find findIndex # all/any/none/one(arr, pred) also HO
-type:     int float string bool type isNil
-util:     print sprintf keys values clamp between hasKey empty notEmpty
-          default coalesce repeat range zip chunk compact truthy pluck
-          groupBy sortBy toJSON fromJSON
-quality:  v q isGood isBad isUncertain withQ
-time:     timeUTC timeUnix … durSeconds durMs durNs
-```
-
-### Host ≠ language
-
-Sandbox / Secure / ReadOnly / StrictMode / Operator overload / `WithFunction` / `WithSafeFunction` — engine options (§11). API overview: [README.md](README.md) / [doc.go](doc.go). History: [CHANGELOG.md](CHANGELOG.md).
+- API and Go integration: [README.md](README.md) and [doc.go](doc.go).
+- Runnable examples: [examples/](examples/).
+- Interactive catalog: [examples/playground/](examples/playground/).
+- Release history and compatibility notes: [CHANGELOG.md](CHANGELOG.md).

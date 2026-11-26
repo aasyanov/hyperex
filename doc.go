@@ -9,7 +9,7 @@
 // package-private; concrete AST node types are unexported.
 //
 // Expression language syntax and semantics are defined in LANGUAGE.md (normative),
-// including numeric edges and sandbox / Secure / SafeFunction host options (§3.5, §11).
+// including numeric edges and sandbox / Secure / SafeFunction host options (§10, §11).
 //
 // HyperEx compiles expressions to bytecode and runs them on an optimized vm.
 // Design goals include aggressive compile-time optimization, specialized opcodes,

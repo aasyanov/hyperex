@@ -67,7 +67,8 @@ func New(opts ...Option) *Engine {
 	optimizer := newOptimizer().
 		withConstantFolding(config.constantFolding).
 		withStrengthReduction(config.strengthReduce).
-		withNumericMode(config.numericMode)
+		withNumericMode(config.numericMode).
+		withNonFiniteMode(config.nonFiniteMode)
 	// Tell optimizer about overloaded operators so it doesn't optimize them
 	if len(config.operators) > 0 {
 		optimizer.withSkipOperators(config.operators)
@@ -77,6 +78,7 @@ func New(opts ...Option) *Engine {
 	var typeChecker *TypeChecker
 	if config.typeCheck && config.envVal != nil {
 		typeChecker = NewTypeChecker().WithStructEnv(config.envVal)
+		typeChecker.numericMode = config.numericMode
 	}
 
 	eng := &Engine{
@@ -247,7 +249,14 @@ func (e *Engine) EvalFloat(ctx context.Context, expr string, env ...any) (float6
 	if err != nil {
 		return 0, err
 	}
-	return convertFloat(NewValue(result), e.config.strictMode)
+	f, err := convertFloat(NewValue(result), e.config.strictMode)
+	if err != nil {
+		return 0, err
+	}
+	if err := rejectNonFiniteResult(e.config.nonFiniteMode, Float(f)); err != nil {
+		return 0, err
+	}
+	return f, nil
 }
 
 // EvalString compiles and evaluates an expression, returning a string result.

@@ -622,12 +622,14 @@ func TestCoverage_StructEnvTagsAndErrors(t *testing.T) {
 	env := Env{A: 1, B: "x", d: 7}
 	_ = env.d // unexported fields must not appear in the type env
 	tc := NewTypeChecker().WithStructEnv(env)
-	if tc.env["alpha"] != TypeInt || tc.env["beta"] != TypeString {
-		t.Fatalf("tags not applied: %#v", tc.env)
+	if tc.env["alpha"] != TypeInt || tc.env["B"] != TypeString {
+		t.Fatalf("environment fields not applied: %#v", tc.env)
 	}
-	// expr:"-" keeps the Go field name (does not remap).
-	if tc.env["C"] != TypeInt {
-		t.Fatalf("expr:\"-\" should keep field name C, got %#v", tc.env)
+	if _, ok := tc.env["beta"]; ok {
+		t.Fatal("json tag must not create an environment alias")
+	}
+	if _, ok := tc.env["C"]; ok {
+		t.Fatalf("expr:\"-\" field registered: %#v", tc.env)
 	}
 	tc.WithStructEnv(42) // non-struct no-op
 	tc.WithStructEnv(&Env{A: 2})
@@ -690,23 +692,6 @@ func TestCoverage_DeadCodeAndStrength(t *testing.T) {
 		_ = opt.isZero(&intLit{Value: 0})
 		_ = opt.isZero(&floatLit{Value: 0})
 		_ = opt.isZero(&intLit{Value: 1})
-		_ = opt.nodesEqual(&ident{Name: "x"}, &ident{Name: "x"})
-		_ = opt.nodesEqual(&stringLit{Value: "a"}, &stringLit{Value: "a"})
-		_ = opt.nodesEqual(&boolLit{Value: true}, &boolLit{Value: true})
-		_ = opt.nodesEqual(&nilLit{}, &nilLit{})
-		_ = opt.nodesEqual(&intLit{Value: 1}, &stringLit{Value: "1"})
-		_ = opt.isSideEffectFree(&ternaryExpr{
-			Cond: &boolLit{Value: true},
-			Then: &intLit{Value: 1},
-			Else: &intLit{Value: 2},
-		})
-		_ = opt.isSideEffectFree(&mapLit{
-			Keys:   []Node{&stringLit{Value: "a"}},
-			Values: []Node{&intLit{Value: 1}},
-		})
-		_ = opt.isSideEffectFree(&memberExpr{Object: &ident{Name: "o"}, Property: &ident{Name: "f"}})
-		_ = opt.isSideEffectFree(&indexExpr{Object: &ident{Name: "a"}, Index: &intLit{Value: 0}})
-		_ = opt.isSideEffectFree(&arrayLit{Elements: []Node{&intLit{Value: 1}}})
 	}
 }
 
@@ -1476,7 +1461,7 @@ func TestCoverage_Wave4_OverflowsParseErrors(t *testing.T) {
 	}
 	_, _ = sec.Eval(ctx, `1`, map[string]any{"m": bigMap})
 
-	// callBuiltinFunc non-func / closure paths
+	// Higher-order callback paths
 	_, _ = Eval(ctx, `map([1,2,3], x => x + 1)`)
 	_, _ = Eval(ctx, `filter([1,2,3], x => x > 1)`)
 	_, _ = Eval(ctx, `find([1,2,3], x => x == 2)`)
@@ -2199,12 +2184,12 @@ func TestTypeChecker_GeneratesErrors(t *testing.T) {
 		t.Error("expected type error for string - string")
 	}
 
-	// Boolean operators require bool - int && bool should error
+	// Logical operators use language truthiness, not a boolean-only subset.
 	parser = newParser("count && flag")
 	ast, _ = parser.parse()
 	errors = tc.Check(ast)
-	if errors == nil || errors.Len() == 0 {
-		t.Error("expected type error for int && bool")
+	if errors != nil && errors.Len() != 0 {
+		t.Errorf("unexpected truthiness error: %v", errors)
 	}
 
 	// Bitwise operators require int - string & int should error
@@ -2215,12 +2200,12 @@ func TestTypeChecker_GeneratesErrors(t *testing.T) {
 		t.Error("expected type error for string & int")
 	}
 
-	// Unary not on int should error
+	// Unary not also accepts any truthy value.
 	parser = newParser("!count")
 	ast, _ = parser.parse()
 	errors = tc.Check(ast)
-	if errors == nil || errors.Len() == 0 {
-		t.Error("expected type error for !int")
+	if errors != nil && errors.Len() != 0 {
+		t.Errorf("unexpected unary truthiness error: %v", errors)
 	}
 }
 
@@ -4610,18 +4595,11 @@ func TestMakeConstKey_NilPtr(t *testing.T) {
 	}
 }
 
-func TestCallClosureFromBuiltin_MaxDepth(t *testing.T) {
-	// Test that closures called from builtins respect maxDepth
-	engine := New()
-
-	// Create a deeply recursive map call
-	// This should eventually hit the depth limit
-	_, err := engine.Eval(context.Background(), `
-		let deepRecurse = arr => arr | map(x => x > 0 ? deepRecurse([x - 1]) : 0);
-		deepRecurse([100])
-	`, nil)
-	if err == nil {
-		t.Error("Expected max call depth error for recursive closure")
+func TestHigherOrderClosure_MaxDepth(t *testing.T) {
+	engine := New(WithMaxCallDepth(2))
+	_, err := engine.Eval(context.Background(), `let f = x => x; map([1], x => f(x))`, nil)
+	if !errors.Is(err, ErrMaxCallDepth) {
+		t.Fatalf("got %v, want ErrMaxCallDepth", err)
 	}
 }
 
@@ -5065,39 +5043,6 @@ func TestVM_Peek_DebugMode(t *testing.T) {
 	vm.peek()
 }
 
-func TestOptimizer_IsSideEffectFree(t *testing.T) {
-	// Test isSideEffectFree function coverage
-	tests := []struct {
-		name     string
-		node     Node
-		expected bool
-	}{
-		{"intLit", &intLit{Value: 42}, true},
-		{"floatLit", &floatLit{Value: 3.14}, true},
-		{"stringLit", &stringLit{Value: "hello"}, true},
-		{"boolLit", &boolLit{Value: true}, true},
-		{"nilLit", &nilLit{}, true},
-		{"ident", &ident{Name: "x"}, true},
-		{"unaryExpr", &unaryExpr{Op: "-", Operand: &intLit{Value: 1}}, true},
-		{"binaryExpr", &binaryExpr{Op: "+", Left: &intLit{Value: 1}, Right: &intLit{Value: 2}}, true},
-		{"memberExpr", &memberExpr{Object: &ident{Name: "x"}, Property: &ident{Name: "y"}}, true},
-		{"indexExpr", &indexExpr{Object: &ident{Name: "x"}, Index: &intLit{Value: 0}}, true},
-		{"arrayLit", &arrayLit{Elements: []Node{&intLit{Value: 1}}}, true},
-		{"ArrayLit_WithCall", &arrayLit{Elements: []Node{&callExpr{Func: &ident{Name: "f"}, Args: nil}}}, false},
-		{"callExpr", &callExpr{Func: &ident{Name: "f"}, Args: nil}, false},
-		{"letExpr", &letExpr{Name: "x", Value: &intLit{Value: 1}, Body: &ident{Name: "x"}}, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isSideEffectFree(tt.node)
-			if result != tt.expected {
-				t.Errorf("isSideEffectFree(%s): got %v, want %v", tt.name, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestOptimizer_CopyNode(t *testing.T) {
 	// Test copyNode function coverage
 	tests := []struct {
@@ -5527,8 +5472,8 @@ func TestTypeChecker_AllNodeTypes(t *testing.T) {
 		{"x <= 1", TypeBool},
 		{"x > 1", TypeBool},
 		{"x >= 1", TypeBool},
-		{"x && true", TypeBool},
-		{"x || true", TypeBool},
+		{"x && true", TypeAny},
+		{"x || true", TypeAny},
 		{"x ?? 0", TypeInt},
 		{"arr[0]", TypeAny},
 		{`obj["key"]`, TypeAny},
@@ -6687,24 +6632,24 @@ func TestTypeChecker_AllBranches(t *testing.T) {
 		{`s / s`, true},
 		{`s % s`, true},
 		{`s ** s`, true},
-		// Logical on non-bool should error
-		{`i && i`, true},
-		{`i || i`, true},
-		{`s and s`, true},
-		{`s or s`, true},
+		// Logical operators accept truthy values
+		{`i && i`, false},
+		{`i || i`, false},
+		{`s and s`, false},
+		{`s or s`, false},
 		// Bitwise on non-int should error
 		{`s & s`, true},
 		{`s | s`, true},
 		{`s ^ s`, true},
 		{`s << s`, true},
 		{`s >> s`, true},
-		// Unary not on non-bool
-		{`!i`, true},
-		{`not s`, true},
+		// Unary not accepts truthy values
+		{`!i`, false},
+		{`not s`, false},
 		// Bitwise not on non-int
 		{`~s`, true},
-		// Ternary with non-bool condition
-		{`s ? 1 : 0`, true},
+		// Ternary conditions use truthiness
+		{`s ? 1 : 0`, false},
 		// Valid expressions
 		{`i + i`, false},
 		{`b && b`, false},

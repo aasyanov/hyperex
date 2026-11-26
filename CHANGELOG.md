@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] — 2026-11-26
+
+### Fixed
+
+- **VM and lifecycle:** `chunk` no longer panics on extreme sizes; `..` observes ops/cancellation; higher-order lambdas share the parent context, ops budget, and call depth; nested `let` / destructuring restore outer bindings; `let` without a body evaluates its value once.
+- **Sandbox and profiling:** Secure recursively validates nested `Value` arrays/maps; `Program.Profile` preserves Secure, allow/deny, read-only, resource limits, call depth, and `As*` result conversions; cyclic equality is cycle-safe and bounded.
+- **Language and optimizer:** `not in` follows `in` precedence; constant folding preserves `NonFiniteError`, float bit equality, and NaN ordering; algebraic simplifications no longer change numeric types, hide runtime errors, or bypass overflow conversion; typed `EvalFloat` rejects non-finite conversion results.
+- **Studio:** `Inline` substitutes only closed literals and preserves scope, effects, and evaluation errors; `Expand` respects lexical bindings and non-computed properties; `ASTToString` preserves computed keys, postfix precedence, lambda/unary forms, numeric types, `MinInt64`, and parseable non-finite expressions.
+- **TypeChecker:** truthiness matches `LANGUAGE.md`; struct tags match runtime env; `NumericFloat64`, function/variadic argument types, and pipe argument insertion are modeled; destructuring no longer leaks bindings.
+- **Collections and test oracle:** `unique` uses unambiguous structural keys; `sortBy` handles equal keys correctly in descending order; optimizer fuzz compares value types and semantic errors across optimized, unoptimized, and algebraic-only paths while allowing only resource-only divergence.
+
+### Documentation
+
+- Reworked `LANGUAGE.md` into a progressive tutorial and complete language reference with execution model, values, collections, lambdas, built-ins, numeric and temporal semantics, Studio, sandboxing, errors, and practical recipes.
+- Corrected and clarified leading-zero octal literals, `MinInt64`, NaN equality/ordering, `#`/`$n` lambda rules, nested `let` scope, Secure nesting, non-recursive non-finite checks, and playground examples for `repeat`, `flatten`, and `_`.
+
 ## [1.5.0] — 2026-10-15
 
 Studio / SCADA / numeric surface since `v1.0.0`. **SemVer note:** this minor includes breaking removals (module path stays `github.com/aasyanov/hyperex`; no `/v2`). Call sites using removed symbols must migrate before upgrading.

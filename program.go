@@ -85,49 +85,50 @@ func (p *Program) EvalValue(ctx context.Context, env any) (Value, error) {
 		return Nil, annotateEvalError(err, p.source)
 	}
 
-	strict := p.engine.config.strictMode
+	result, err = p.convertResult(result)
+	if err != nil {
+		p.engine.evalErrors.Add(1)
+		return Nil, annotateEvalError(err, p.source)
+	}
+	return result, nil
+}
 
+func (p *Program) convertResult(result Value) (Value, error) {
+	strict := p.engine.config.strictMode
 	if p.expectBool {
-		b, cerr := convertBool(result, strict)
-		if cerr != nil {
-			p.engine.evalErrors.Add(1)
-			return Nil, annotateEvalError(cerr, p.source)
+		b, err := convertBool(result, strict)
+		if err != nil {
+			return Nil, err
 		}
 		return Bool(b), nil
 	}
 	if p.expectInt {
-		n, cerr := convertInt(result, strict)
-		if cerr != nil {
-			p.engine.evalErrors.Add(1)
-			return Nil, annotateEvalError(cerr, p.source)
+		n, err := convertInt(result, strict)
+		if err != nil {
+			return Nil, err
 		}
 		return Int(n), nil
 	}
 	if p.expectFloat {
-		f, cerr := convertFloat(result, strict)
-		if cerr != nil {
-			p.engine.evalErrors.Add(1)
-			return Nil, annotateEvalError(cerr, p.source)
+		f, err := convertFloat(result, strict)
+		if err != nil {
+			return Nil, err
 		}
 		out := Float(f)
-		if nferr := rejectNonFiniteResult(p.engine.config.nonFiniteMode, out); nferr != nil {
-			p.engine.evalErrors.Add(1)
-			return Nil, annotateEvalError(nferr, p.source)
+		if err := rejectNonFiniteResult(p.engine.config.nonFiniteMode, out); err != nil {
+			return Nil, err
 		}
 		return out, nil
 	}
 	if p.expectString {
-		s, cerr := convertString(result, strict)
-		if cerr != nil {
-			p.engine.evalErrors.Add(1)
-			return Nil, annotateEvalError(cerr, p.source)
+		s, err := convertString(result, strict)
+		if err != nil {
+			return Nil, err
 		}
 		return String(s), nil
 	}
-
-	if nferr := rejectNonFiniteResult(p.engine.config.nonFiniteMode, result); nferr != nil {
-		p.engine.evalErrors.Add(1)
-		return Nil, annotateEvalError(nferr, p.source)
+	if err := rejectNonFiniteResult(p.engine.config.nonFiniteMode, result); err != nil {
+		return Nil, err
 	}
 	return result, nil
 }
@@ -190,7 +191,14 @@ func (p *Program) EvalFloat(ctx context.Context, env any) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return convertFloat(NewValue(result), p.engine.config.strictMode)
+	f, err := convertFloat(NewValue(result), p.engine.config.strictMode)
+	if err != nil {
+		return 0, err
+	}
+	if err := rejectNonFiniteResult(p.engine.config.nonFiniteMode, Float(f)); err != nil {
+		return 0, err
+	}
+	return f, nil
 }
 
 // EvalString evaluates and returns a string result.

@@ -124,9 +124,10 @@ type (
 
 	// letExpr represents a let binding (let x = 1; expr).
 	letExpr struct {
-		Name  string
-		Value Node
-		Body  Node
+		Name         string
+		Value        Node
+		Body         Node
+		ImplicitBody bool
 	}
 
 	// spreadExpr represents a spread expression (...arr).
@@ -137,10 +138,11 @@ type (
 	// destructureExpr represents destructuring assignment.
 	// let {a, b} = obj or let [a, b] = arr
 	destructureExpr struct {
-		Pattern []destructureField // Fields to extract
-		IsArray bool               // true for array destructuring
-		Value   Node               // Source expression
-		Body    Node               // Body expression
+		Pattern      []destructureField // Fields to extract
+		IsArray      bool               // true for array destructuring
+		Value        Node               // Source expression
+		Body         Node               // Body expression
+		ImplicitBody bool
 	}
 
 	// destructureField represents a single field in destructuring.
@@ -195,9 +197,20 @@ func (n *rangeExpr) String() string    { return fmt.Sprintf("%s..%s", n.Start, n
 func (n *pipeExpr) String() string     { return fmt.Sprintf("%s | %s", n.Left, n.Right) }
 func (n *lambdaExpr) String() string   { return fmt.Sprintf("(%v => %s)", n.Params, n.Body) }
 func (n *coalesceExpr) String() string { return fmt.Sprintf("(%s ?? %s)", n.Left, n.Right) }
-func (n *letExpr) String() string      { return fmt.Sprintf("(let %s = %s; %s)", n.Name, n.Value, n.Body) }
-func (n *spreadExpr) String() string   { return fmt.Sprintf("...%s", n.Expr) }
+func (n *letExpr) String() string {
+	if n.ImplicitBody {
+		return fmt.Sprintf("(let %s = %s)", n.Name, n.Value)
+	}
+	return fmt.Sprintf("(let %s = %s; %s)", n.Name, n.Value, n.Body)
+}
+func (n *spreadExpr) String() string { return fmt.Sprintf("...%s", n.Expr) }
 func (n *destructureExpr) String() string {
+	if n.ImplicitBody {
+		if n.IsArray {
+			return fmt.Sprintf("(let [...] = %s)", n.Value)
+		}
+		return fmt.Sprintf("(let {...} = %s)", n.Value)
+	}
 	if n.IsArray {
 		return fmt.Sprintf("(let [...] = %s; %s)", n.Value, n.Body)
 	}
@@ -376,9 +389,10 @@ func Transform(node Node, fn func(Node) Node) Node {
 		})
 	case *letExpr:
 		return fn(&letExpr{
-			Name:  n.Name,
-			Value: Transform(n.Value, fn),
-			Body:  Transform(n.Body, fn),
+			Name:         n.Name,
+			Value:        Transform(n.Value, fn),
+			Body:         Transform(n.Body, fn),
+			ImplicitBody: n.ImplicitBody,
 		})
 	case *spreadExpr:
 		return fn(&spreadExpr{
@@ -396,10 +410,11 @@ func Transform(node Node, fn func(Node) Node) Node {
 			}
 		}
 		return fn(&destructureExpr{
-			Pattern: pattern,
-			IsArray: n.IsArray,
-			Value:   Transform(n.Value, fn),
-			Body:    Transform(n.Body, fn),
+			Pattern:      pattern,
+			IsArray:      n.IsArray,
+			Value:        Transform(n.Value, fn),
+			Body:         Transform(n.Body, fn),
+			ImplicitBody: n.ImplicitBody,
 		})
 	default:
 		return fn(node)

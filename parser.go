@@ -116,8 +116,11 @@ func (p *parser) parsePrecedence(minPrec int) (Node, error) {
 			continue
 		}
 
-		// Handle 'not in' as a binary operator (special case before precedence check)
+		// Handle 'not in' at the same precedence as 'in'.
 		if p.curr.Type == tokenNot && p.lexer.Peek().Type == tokenIn {
+			if tokenIn.Precedence() < minPrec {
+				break
+			}
 			p.advance() // consume 'not'
 			p.advance() // consume 'in'
 			right, err := p.parsePrecedence(tokenIn.Precedence() + 1)
@@ -152,7 +155,7 @@ func (p *parser) parsePrecedence(minPrec int) (Node, error) {
 		// Handle pipe operator: arr | func
 		//
 		// DISAMBIGUATION RULES for | operator (pipe vs bitwise OR):
-		// The parser uses heuristics to determine intent (documented in LANGUAGE.md §9):
+		// The parser uses heuristics to determine intent (documented in LANGUAGE.md §6.7):
 		//
 		// 1. Integer/float literals on either side → never PIPE (always bitwise OR).
 		//
@@ -469,7 +472,7 @@ func (p *parser) parseLet() (Node, error) {
 	if !p.match(tokenSemi) {
 		// If no semicolon, the let is the final expression
 		// Note: `let x = 5` returns 5 and binds x in the environment
-		return &letExpr{Name: name.Value, Value: value, Body: value}, nil
+		return &letExpr{Name: name.Value, Value: value, Body: value, ImplicitBody: true}, nil
 	}
 
 	body, err := p.parseExpression()
@@ -540,7 +543,7 @@ func (p *parser) parseObjectDestructure() (Node, error) {
 	// Match plain let: if no ';', the destructure is the final expression
 	// (Body = Value). If ';' is present, parse the body expression.
 	if !p.match(tokenSemi) {
-		return &destructureExpr{Pattern: pattern, IsArray: false, Value: value, Body: value}, nil
+		return &destructureExpr{Pattern: pattern, IsArray: false, Value: value, Body: value, ImplicitBody: true}, nil
 	}
 
 	body, err := p.parseExpression()
@@ -601,7 +604,7 @@ func (p *parser) parseArrayDestructure() (Node, error) {
 	// Match plain let: if no ';', the destructure is the final expression
 	// (Body = Value). If ';' is present, parse the body expression.
 	if !p.match(tokenSemi) {
-		return &destructureExpr{Pattern: pattern, IsArray: true, Value: value, Body: value}, nil
+		return &destructureExpr{Pattern: pattern, IsArray: true, Value: value, Body: value, ImplicitBody: true}, nil
 	}
 
 	body, err := p.parseExpression()

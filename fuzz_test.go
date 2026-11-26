@@ -2,6 +2,7 @@ package hyperex
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -229,33 +230,131 @@ func FuzzOptimize_Equivalent(f *testing.F) {
 
 			engOpt := New(WithOptimize(true), WithMaxOps(50_000), WithTimeout(10*time.Millisecond))
 			engNo := New(WithOptimize(false), WithMaxOps(50_000), WithTimeout(10*time.Millisecond))
+			engAlg := New(WithConstantFolding(false), WithMaxOps(50_000), WithTimeout(10*time.Millisecond))
 
 			pOpt, err1 := engOpt.Compile(expr)
 			pNo, err2 := engNo.Compile(expr)
-			// Compile may diverge when the optimizer folds away ill-formed subtrees;
-			// only require result equivalence when both compile and both eval succeed.
-			if err1 != nil || err2 != nil {
+			pAlg, err3 := engAlg.Compile(expr)
+			if err1 != nil || err2 != nil || err3 != nil {
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 			defer cancel()
-			r1, e1 := pOpt.Eval(ctx, env)
-			r2, e2 := pNo.Eval(ctx, env)
-			if e1 != nil || e2 != nil {
-				// Algebraic folds (e.g. A*0 -> 0) can mask UndefinedError; errors need not match.
+			results := []struct {
+				name  string
+				value any
+				err   error
+			}{
+				{name: "optimized"},
+				{name: "unoptimized"},
+				{name: "algebraic-only"},
+			}
+			results[0].value, results[0].err = pOpt.Eval(ctx, env)
+			results[1].value, results[1].err = pNo.Eval(ctx, env)
+			results[2].value, results[2].err = pAlg.Eval(ctx, env)
+			for i := 1; i < len(results); i++ {
+				if fuzzErrorDivergence(results[0].err, results[i].err) {
+					t.Fatalf("error mismatch: %s=%v %s=%v", results[0].name, results[0].err, results[i].name, results[i].err)
+				}
+			}
+			if results[0].err != nil || results[1].err != nil || results[2].err != nil {
 				return
 			}
-			v1, v2 := NewValue(r1), NewValue(r2)
-			// Closures/funcs are rebuilt per Compile - pointer identity will differ.
-			if v1.IsFunc() || v2.IsFunc() {
-				if v1.IsFunc() && v2.IsFunc() {
-					return
-				}
-				t.Fatalf("func-ness mismatch: opt=%v no=%v", r1, r2)
-			}
-			if !v1.Equal(v2) {
-				t.Fatalf("result mismatch: opt=%v no=%v", r1, r2)
+			for i := 1; i < len(results); i++ {
+				assertFuzzEquivalent(t, results[0].value, results[i].value)
 			}
 		})
 	})
+}
+
+func fuzzErrorDivergence(a, b error) bool {
+	if a == nil || b == nil {
+		if fuzzResourceError(a) || fuzzResourceError(b) {
+			return false
+		}
+		return a != b
+	}
+	aResource := fuzzResourceError(a)
+	bResource := fuzzResourceError(b)
+	if aResource || bResource {
+		return false
+	}
+	if errors.Is(a, b) || errors.Is(b, a) {
+		return false
+	}
+	var aUndefined, bUndefined *UndefinedError
+	if errors.As(a, &aUndefined) && errors.As(b, &bUndefined) {
+		return aUndefined.Name != bUndefined.Name || aUndefined.Kind != bUndefined.Kind
+	}
+	aRoot, bRoot := fuzzRootError(a), fuzzRootError(b)
+	if aRoot == bRoot {
+		return false
+	}
+	var aRuntime, bRuntime *RuntimeError
+	if errors.As(a, &aRuntime) && errors.As(b, &bRuntime) {
+		return aRuntime.Message != bRuntime.Message ||
+			aRuntime.Op != bRuntime.Op ||
+			aRuntime.Left != bRuntime.Left ||
+			aRuntime.Right != bRuntime.Right
+	}
+	return true
+}
+
+func fuzzRootError(err error) error {
+	for {
+		next := errors.Unwrap(err)
+		if next == nil {
+			return err
+		}
+		err = next
+	}
+}
+
+func fuzzResourceError(err error) bool {
+	return errors.Is(err, ErrTimeout) || errors.Is(err, ErrOpsLimitExceeded) || errors.Is(err, ErrOperationCancelled)
+}
+
+func assertFuzzEquivalent(t *testing.T, a, b any) {
+	t.Helper()
+	va, vb := NewValue(a), NewValue(b)
+	if va.IsFunc() || vb.IsFunc() {
+		if va.IsFunc() && vb.IsFunc() {
+			return
+		}
+		t.Fatalf("func-ness mismatch: %v != %v", a, b)
+	}
+	if va.Type() != vb.Type() {
+		t.Fatalf("type mismatch: %v (%s) != %v (%s)", a, va.Type(), b, vb.Type())
+	}
+	if !va.Equal(vb) {
+		t.Fatalf("result mismatch: %v != %v", a, b)
+	}
+}
+
+func TestFuzzErrorDivergenceSemanticTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a    error
+		b    error
+		want bool
+	}{
+		{name: "different sentinels", a: ErrDivisionByZero, b: ErrIndexOutOfBounds, want: true},
+		{name: "same sentinel", a: ErrDivisionByZero, b: ErrDivisionByZero, want: false},
+		{name: "same wrapped sentinel", a: wrapRuntime(ErrDivisionByZero), b: wrapRuntime(ErrDivisionByZero), want: false},
+		{name: "different wrapped sentinels", a: wrapRuntime(ErrDivisionByZero), b: wrapRuntime(ErrIndexOutOfBounds), want: true},
+		{name: "same runtime semantics", a: &RuntimeError{Message: "same"}, b: &RuntimeError{Message: "same"}, want: false},
+		{name: "different runtime semantics", a: &RuntimeError{Message: "one"}, b: &RuntimeError{Message: "two"}, want: true},
+		{name: "semantic versus value", a: ErrDivisionByZero, b: nil, want: true},
+		{name: "resource versus value", a: ErrTimeout, b: nil, want: false},
+		{name: "resource versus semantic", a: ErrTimeout, b: ErrDivisionByZero, want: false},
+		{name: "two resource errors", a: ErrTimeout, b: ErrOperationCancelled, want: false},
+		{name: "same undefined", a: &UndefinedError{Name: "x", Kind: "variable"}, b: &UndefinedError{Name: "x", Kind: "variable"}, want: false},
+		{name: "different undefined", a: &UndefinedError{Name: "x", Kind: "variable"}, b: &UndefinedError{Name: "y", Kind: "variable"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fuzzErrorDivergence(tc.a, tc.b); got != tc.want {
+				t.Fatalf("got %t, want %t", got, tc.want)
+			}
+		})
+	}
 }

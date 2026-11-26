@@ -35,7 +35,7 @@ func main() {
 	if err := hyperex.ValidateWithEnv(`name * 2`, Env{}); err != nil {
 		fmt.Printf("  type mismatch: %v\n", err)
 	} else {
-		fmt.Println("  name * 2 unexpectedly ok")
+		fmt.Println("  name * 2 -> ok (string repetition)")
 	}
 
 	fmt.Println("\n=== ExtractVariables / ExtractFunctions ===")
@@ -95,7 +95,7 @@ func main() {
 	if errs := tc.Check(bad); errs != nil && len(errs.Errors) > 0 {
 		fmt.Printf("  Check type error: %v\n", errs)
 	} else {
-		fmt.Println("  name * age unexpectedly ok")
+		fmt.Println("  name * age -> ok (string repetition)")
 	}
 
 	fmt.Println("\n=== Engine WithTypeCheck / Compile ===")
@@ -108,7 +108,7 @@ func main() {
 	if _, err := eng.Compile(`name * age`); err != nil {
 		fmt.Printf("  Compile type error: %v\n", err)
 	} else {
-		fmt.Println("  Compile(name * age) unexpectedly ok")
+		fmt.Println("  Compile(name * age) -> ok (string repetition)")
 	}
 }
 

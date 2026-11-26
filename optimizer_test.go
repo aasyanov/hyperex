@@ -269,28 +269,11 @@ func TestModeB_Optimizer_NumericFloat64Folds(t *testing.T) {
 	}
 
 	opt := defaultOptimizer()
-	opt.numericMode = NumericFloat64
-	if _, ok := opt.numericZeroLit().(*floatLit); !ok {
-		t.Fatal("NumericFloat64 numericZeroLit want floatLit")
-	}
-	if _, ok := opt.numericOneLit().(*floatLit); !ok {
-		t.Fatal("NumericFloat64 numericOneLit want floatLit")
-	}
-	opt.numericMode = NumericDefault
-	if _, ok := opt.numericZeroLit().(*intLit); !ok {
-		t.Fatal("default numericZeroLit want intLit")
-	}
-
-	// isDefinitelyInt deeper paths
 	ast, err := newParser(`~~(1 + 2 - 3)`).parse()
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = opt.optimize(ast)
-	_ = opt.isDefinitelyInt(&binaryExpr{Op: "+", Left: &intLit{Value: 1}, Right: &intLit{Value: 2}})
-	_ = opt.isDefinitelyInt(&unaryExpr{Op: "~", Operand: &intLit{Value: 1}})
-	_ = opt.isDefinitelyInt(&floatLit{Value: 1})
-	_ = opt.isDefinitelyInt(&ident{Name: "x"})
 
 	// timeUTC non-integer float args (month…sec)
 	_, err = eng.Eval(ctx, `timeUTC(2024.0, 6.5, 1, 0, 0, 0)`)

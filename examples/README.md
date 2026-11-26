@@ -179,6 +179,13 @@ Public symbol → primary example (or playground note).
 
 Language syntax, builtins catalogs, and interactive option toggles are covered by the **playground UI**.
 
+## Verification
+
+- Every cookbook directory can be run with `go run ./examples/<name>/`.
+- `playground/examples_test.go` compiles and evaluates every catalog example and checks special documented results.
+- `playground/api_test.go` exercises all API endpoints with `httptest`.
+- The root `language_spec_test.go` checks representative examples from `LANGUAGE.md`, including lambda special-name forms.
+
 ## Conventions
 
 - Import `github.com/aasyanov/hyperex` (+ stdlib) only.

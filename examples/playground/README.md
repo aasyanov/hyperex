@@ -29,6 +29,8 @@ Open http://localhost:9090
 
 ## Features
 
+- Restrained engineering workbench with compact panels, filtered catalog, and collapsible categories
+- Catalog QA mode evaluates all 291 examples and reports every result with per-category totals
 - 200+ categorized examples covering language features and builtins
 - Interactive evaluation with sandbox, strict mode, and optimize options
 - Static analysis and profiling
@@ -89,6 +91,8 @@ playground/
 ├── main.go         # HTTP server and API handlers
 ├── config.go       # Config and builtin function docs
 ├── examples.go     # Example catalog
+├── examples_test.go # Executes every catalog example
+├── api_test.go     # API endpoint coverage
 ├── README.md
 └── web/
     └── index.html  # Embedded UI

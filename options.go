@@ -271,7 +271,7 @@ func WithMaxCallDepth(depth int) Option {
 // Example:
 //
 //	engine := hyperex.New(hyperex.WithStrictMode(true))
-//	_, err := engine.Eval(`"abc" + 1`) // Error: cannot convert "abc" to number
+//	_, err := engine.EvalInt(ctx, `"abc"`) // Error: invalid type conversion
 func WithStrictMode(strict bool) Option {
 	return func(c *engineConfig) {
 		c.strictMode = strict

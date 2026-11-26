@@ -49,7 +49,7 @@ func GetBuiltinFunctions() []BuiltinFunction {
 		{Name: "replace", Category: catString, Description: "Replace all", Signature: "replace(s, old, new) → string", Example: `replace("hello", "l", "L")`},
 		{Name: "substr", Category: catString, Description: "Substring", Signature: "substr(s, start, len?) → string", Example: `substr("hello", 1, 3)`},
 		{Name: "indexOf", Category: catString, Description: "Index of substring", Signature: "indexOf(s, sub) → int", Example: `indexOf("hello", "l")`},
-		{Name: "repeat", Category: catString, Description: "Repeat string", Signature: "repeat(s, n) → string", Example: `repeat("ab", 3)`},
+		{Name: "repeat", Category: catString, Description: "Repeat value into an array", Signature: "repeat(v, n) → array", Example: `repeat("ab", 3)`},
 
 		// Array
 		{Name: "first", Category: catArray, Description: "First element", Signature: "first(arr) → any", Example: "first([1,2,3])"},
@@ -106,5 +106,34 @@ func GetBuiltinFunctions() []BuiltinFunction {
 		{Name: "sprintf", Category: catUtility, Description: "Format string", Signature: "sprintf(fmt, ...) → string", Example: `sprintf("%d + %d = %d", 1, 2, 3)`},
 		{Name: "toJSON", Category: catUtility, Description: "To JSON string", Signature: "toJSON(x) → string", Example: `toJSON({"a":1})`},
 		{Name: "fromJSON", Category: catUtility, Description: "Parse JSON", Signature: "fromJSON(s) → any", Example: `fromJSON('{"a":1}')`},
+
+		// Time / duration
+		{Name: "timeUTC", Category: catTime, Description: "Construct UTC instant", Signature: "timeUTC(y, m, d, h, min, s) → time", Example: "timeUTC(2024, 1, 2, 3, 4, 5)"},
+		{Name: "timeUnix", Category: catTime, Description: "From Unix seconds", Signature: "timeUnix(sec) → time", Example: "timeUnix(0)"},
+		{Name: "timeUnixNano", Category: catTime, Description: "From Unix nanoseconds", Signature: "timeUnixNano(ns) → time", Example: "timeUnixNano(1000000000)"},
+		{Name: "unix", Category: catTime, Description: "Extract Unix seconds", Signature: "unix(t) → int", Example: "unix(timeUnix(60))"},
+		{Name: "unixNano", Category: catTime, Description: "Extract Unix nanoseconds", Signature: "unixNano(t) → int", Example: "unixNano(timeUnixNano(1000000000))"},
+		{Name: "timeYear", Category: catTime, Description: "UTC year", Signature: "timeYear(t) → int", Example: "timeYear(timeUTC(2024, 1, 2, 3, 4, 5))"},
+		{Name: "timeMonth", Category: catTime, Description: "UTC month", Signature: "timeMonth(t) → int", Example: "timeMonth(timeUTC(2024, 1, 2, 3, 4, 5))"},
+		{Name: "timeDay", Category: catTime, Description: "UTC day", Signature: "timeDay(t) → int", Example: "timeDay(timeUTC(2024, 1, 2, 3, 4, 5))"},
+		{Name: "timeHour", Category: catTime, Description: "UTC hour", Signature: "timeHour(t) → int", Example: "timeHour(timeUTC(2024, 1, 2, 3, 4, 5))"},
+		{Name: "timeMinute", Category: catTime, Description: "UTC minute", Signature: "timeMinute(t) → int", Example: "timeMinute(timeUTC(2024, 1, 2, 3, 4, 5))"},
+		{Name: "timeSecond", Category: catTime, Description: "UTC second", Signature: "timeSecond(t) → int", Example: "timeSecond(timeUTC(2024, 1, 2, 3, 4, 5))"},
+		{Name: "timeWeekday", Category: catTime, Description: "Weekday (Sunday=0)", Signature: "timeWeekday(t) → int", Example: "timeWeekday(timeUTC(2024, 1, 2, 3, 4, 5))"},
+		{Name: "timeAdd", Category: catTime, Description: "Add duration to instant", Signature: "timeAdd(t, d) → time", Example: "timeAdd(timeUnix(0), durationSeconds(60))"},
+		{Name: "durationSeconds", Category: catTime, Description: "Construct duration from seconds", Signature: "durationSeconds(n) → duration", Example: "durationSeconds(90)"},
+		{Name: "durationMs", Category: catTime, Description: "Construct duration from milliseconds", Signature: "durationMs(n) → duration", Example: "durationMs(1500)"},
+		{Name: "durationNs", Category: catTime, Description: "Construct duration from nanoseconds", Signature: "durationNs(n) → duration", Example: "durationNs(1000000000)"},
+		{Name: "durSeconds", Category: catTime, Description: "Duration in seconds", Signature: "durSeconds(d) → float", Example: "durSeconds(durationMs(1500))"},
+		{Name: "durMs", Category: catTime, Description: "Duration in milliseconds", Signature: "durMs(d) → int", Example: "durMs(durationSeconds(2))"},
+		{Name: "durNs", Category: catTime, Description: "Duration in nanoseconds", Signature: "durNs(d) → int", Example: "durNs(durationMs(1))"},
+
+		// Quality
+		{Name: "v", Category: catQuality, Description: "Extract process value", Signature: "v(x) → any", Example: "v(withQ(12.5, 0))"},
+		{Name: "q", Category: catQuality, Description: "Extract quality code", Signature: "q(x) → number", Example: "q(withQ(12.5, 0))"},
+		{Name: "isGood", Category: catQuality, Description: "Check Good quality", Signature: "isGood(x) → bool", Example: "isGood(withQ(12.5, 0))"},
+		{Name: "isBad", Category: catQuality, Description: "Check Bad quality", Signature: "isBad(x) → bool", Example: "isBad(0x80000000)"},
+		{Name: "isUncertain", Category: catQuality, Description: "Check Uncertain quality", Signature: "isUncertain(x) → bool", Example: "isUncertain(0x40000000)"},
+		{Name: "withQ", Category: catQuality, Description: "Build value-quality map", Signature: "withQ(value, qcode) → map", Example: "withQ(12.5, 0)"},
 	}
 }

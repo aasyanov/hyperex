@@ -106,7 +106,7 @@ func aggElemMatches(vm *execVM, elem any, index int, pred Value, hasPred bool) (
 	if !hasPred {
 		return NewValue(elem).Bool(), nil
 	}
-	val, err := callBuiltinFunc(vm, pred, []Value{NewValue(elem), Int(int64(index))})
+	val, err := vm.call(pred, []Value{NewValue(elem), Int(int64(index))})
 	if err != nil {
 		return false, err
 	}
@@ -225,7 +225,7 @@ func builtinMap(vm *execVM, args []Value) (Value, error) {
 		if err := vm.sandboxLoopCheck(i); err != nil {
 			return Nil, err
 		}
-		val, err := callBuiltinFunc(vm, fn, []Value{NewValue(elem), Int(int64(i))})
+		val, err := vm.call(fn, []Value{NewValue(elem), Int(int64(i))})
 		if err != nil {
 			return Nil, err
 		}
@@ -253,7 +253,7 @@ func builtinFilter(vm *execVM, args []Value) (Value, error) {
 		if err := vm.sandboxLoopCheck(i); err != nil {
 			return Nil, err
 		}
-		val, err := callBuiltinFunc(vm, fn, []Value{NewValue(elem), Int(int64(i))})
+		val, err := vm.call(fn, []Value{NewValue(elem), Int(int64(i))})
 		if err != nil {
 			return Nil, err
 		}
@@ -298,7 +298,7 @@ func builtinReduce(vm *execVM, args []Value) (Value, error) {
 		if err := vm.sandboxLoopCheck(i); err != nil {
 			return Nil, err
 		}
-		val, err := callBuiltinFunc(vm, fn, []Value{acc, NewValue(arr[i]), Int(int64(i))})
+		val, err := vm.call(fn, []Value{acc, NewValue(arr[i]), Int(int64(i))})
 		if err != nil {
 			return Nil, err
 		}
@@ -325,7 +325,7 @@ func builtinFind(vm *execVM, args []Value) (Value, error) {
 		if err := vm.sandboxLoopCheck(i); err != nil {
 			return Nil, err
 		}
-		val, err := callBuiltinFunc(vm, fn, []Value{NewValue(elem), Int(int64(i))})
+		val, err := vm.call(fn, []Value{NewValue(elem), Int(int64(i))})
 		if err != nil {
 			return Nil, err
 		}
@@ -354,7 +354,7 @@ func builtinFindIndex(vm *execVM, args []Value) (Value, error) {
 		if err := vm.sandboxLoopCheck(i); err != nil {
 			return Nil, err
 		}
-		val, err := callBuiltinFunc(vm, fn, []Value{NewValue(elem), Int(int64(i))})
+		val, err := vm.call(fn, []Value{NewValue(elem), Int(int64(i))})
 		if err != nil {
 			return Nil, err
 		}
@@ -364,5 +364,3 @@ func builtinFindIndex(vm *execVM, args []Value) (Value, error) {
 	}
 	return Int(-1), nil
 }
-
-// callBuiltinFunc calls a function value with arguments

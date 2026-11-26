@@ -656,8 +656,19 @@ func (v Value) Get(key string) (Value, bool) {
 
 // Equal checks if two values are equal.
 func (v Value) Equal(other Value) bool {
+	return valuesEqual(v, other, make(map[valuePair]bool), 0)
+}
+
+type valuePair struct {
+	left  uintptr
+	right uintptr
+	kind  valueKind
+}
+
+const maxValueEqualityDepth = 1000
+
+func valuesEqual(v, other Value, seen map[valuePair]bool, depth int) bool {
 	if v.kind != other.kind {
-		// Handle numeric comparisons across types
 		if v.IsNumber() && other.IsNumber() {
 			return v.Float() == other.Float()
 		}
@@ -667,30 +678,55 @@ func (v Value) Equal(other Value) bool {
 	switch v.kind {
 	case kindNil:
 		return true
-	case kindBool, kindInt, kindTime, kindDuration:
-		return v.bits == other.bits
-	case kindFloat:
+	case kindBool, kindInt, kindTime, kindDuration, kindFloat:
 		return v.bits == other.bits
 	case kindString:
 		return v.ptr.(string) == other.ptr.(string)
 	case kindArray:
+		if depth >= maxValueEqualityDepth {
+			return false
+		}
 		a1, a2 := v.ptr.([]any), other.ptr.([]any)
 		if len(a1) != len(a2) {
 			return false
 		}
+		p1, p2 := reflect.ValueOf(a1).Pointer(), reflect.ValueOf(a2).Pointer()
+		if p1 == p2 {
+			return true
+		}
+		pair := valuePair{left: p1, right: p2, kind: kindArray}
+		if seen[pair] {
+			return true
+		}
+		seen[pair] = true
+		defer delete(seen, pair)
 		for i := range a1 {
-			if !NewValue(a1[i]).Equal(NewValue(a2[i])) {
+			if !valuesEqual(NewValue(a1[i]), NewValue(a2[i]), seen, depth+1) {
 				return false
 			}
 		}
 		return true
 	case kindMap:
+		if depth >= maxValueEqualityDepth {
+			return false
+		}
 		m1, m2 := v.ptr.(map[string]any), other.ptr.(map[string]any)
 		if len(m1) != len(m2) {
 			return false
 		}
+		p1, p2 := reflect.ValueOf(m1).Pointer(), reflect.ValueOf(m2).Pointer()
+		if p1 == p2 {
+			return true
+		}
+		pair := valuePair{left: p1, right: p2, kind: kindMap}
+		if seen[pair] {
+			return true
+		}
+		seen[pair] = true
+		defer delete(seen, pair)
 		for k, v1 := range m1 {
-			if v2, ok := m2[k]; !ok || !NewValue(v1).Equal(NewValue(v2)) {
+			v2, ok := m2[k]
+			if !ok || !valuesEqual(NewValue(v1), NewValue(v2), seen, depth+1) {
 				return false
 			}
 		}

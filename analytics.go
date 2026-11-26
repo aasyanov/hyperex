@@ -414,8 +414,14 @@ func (p *Program) Profile(ctx context.Context, env any) (*Profile, any, error) {
 
 	execStart := time.Now()
 
-	// Build sandbox limits for ops tracking
-	limits := buildSandboxLimits(&SandboxConfig{MaxOps: profileMaxOpsTracking})
+	// Preserve the Engine policy while adding an ops ceiling when none exists.
+	limits := limitsWithFreshDeadline(p.engine.sandboxBase, p.engine.sandboxTimeout)
+	if limits == nil {
+		limits = &sandboxLimits{}
+	}
+	if limits.maxOps <= 0 {
+		limits.maxOps = profileMaxOpsTracking
+	}
 
 	// Read builtins with read lock
 	p.engine.mu.RLock()
@@ -429,7 +435,7 @@ func (p *Program) Profile(ctx context.Context, env any) (*Profile, any, error) {
 	}
 	vm.numericMode = p.engine.config.numericMode
 	vm.nonFiniteMode = p.engine.config.nonFiniteMode
-	if p.engine.config.maxCallDepth > 0 {
+	if limits.maxCallDepth <= 0 && p.engine.config.maxCallDepth > 0 {
 		vm.maxDepth = p.engine.config.maxCallDepth
 	}
 	resultVal, err := vm.run(ctx, toEnvMap(env))
@@ -440,6 +446,11 @@ func (p *Program) Profile(ctx context.Context, env any) (*Profile, any, error) {
 	prof.ExecuteTime = time.Since(execStart)
 	prof.TotalTime = prof.ExecuteTime
 
+	if err != nil {
+		prof.Error = err
+		return prof, nil, err
+	}
+	resultVal, err = p.convertResult(resultVal)
 	if err != nil {
 		prof.Error = err
 		return prof, nil, err

@@ -21,8 +21,8 @@ import (
 var webFS embed.FS
 
 const (
-	Version   = "1.0.0"
-	BuildDate = "2026-08-11"
+	Version   = "1.5.1"
+	BuildDate = "2026-11-26"
 )
 
 var config Config
@@ -87,11 +87,11 @@ func main() {
 func printBanner() {
 	fmt.Printf(`
 ===========================================================================
-  HyperEx Playground v%s (%s)
-  Interactive Web REPL for the HyperEx expression engine
+  HyperEx Workbench v%s (%s)
+  Interactive expression workbench
 
   Features:
-    - 70+ built-in functions
+    - 100 built-in functions
     - Sandbox execution with limits
     - Static analysis, profiling, transforms
     - 200+ ready examples
@@ -138,14 +138,14 @@ type AnalyzeResponse struct {
 	Functions            []string `json:"functions,omitempty"`
 	Operators            []string `json:"operators,omitempty"`
 	Complexity           string   `json:"complexity,omitempty"`
-	IsPure               bool     `json:"isPure,omitempty"`
-	NodeCount            int      `json:"nodeCount,omitempty"`
-	Depth                int      `json:"depth,omitempty"`
-	HasAssignment        bool     `json:"hasAssignment,omitempty"`
-	UsesOptionalChaining bool     `json:"usesOptionalChaining,omitempty"`
-	UsesNilCoalescing    bool     `json:"usesNilCoalescing,omitempty"`
-	HasSideEffects       bool     `json:"hasSideEffects,omitempty"`
-	EstimatedCost        int      `json:"estimatedCost,omitempty"`
+	IsPure               bool     `json:"isPure"`
+	NodeCount            int      `json:"nodeCount"`
+	Depth                int      `json:"depth"`
+	HasAssignment        bool     `json:"hasAssignment"`
+	UsesOptionalChaining bool     `json:"usesOptionalChaining"`
+	UsesNilCoalescing    bool     `json:"usesNilCoalescing"`
+	HasSideEffects       bool     `json:"hasSideEffects"`
+	EstimatedCost        int      `json:"estimatedCost"`
 }
 
 type ProfileRequest struct {

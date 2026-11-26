@@ -199,9 +199,9 @@ func TestInline_NestedLet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
-	// Should not contain "let"
-	if strings.Contains(result, "let") {
-		t.Errorf("Inline should remove all let expressions: %s", result)
+	got, err := Eval(context.Background(), result)
+	if err != nil || got != int64(6) {
+		t.Fatalf("Inline changed nested-let semantics: %q -> (%#v, %v)", result, got, err)
 	}
 }
 

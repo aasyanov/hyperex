@@ -9,7 +9,7 @@ import (
 )
 
 func TestProgram_Eval_ContextCancel(t *testing.T) {
-	prog, err := Compile(`map(range(0, 1000000), # + 1)`)
+	prog, err := Compile(`map(range(0, 1000000), x => x + 1)`)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestProgram_Eval_ContextCancel(t *testing.T) {
 
 func TestProgram_Eval_ContextDeadline(t *testing.T) {
 	eng := New(WithMaxOps(1_000_000_000))
-	prog, err := eng.Compile(`map(range(0, 100000), # + 1)`)
+	prog, err := eng.Compile(`map(range(0, 100000), x => x + 1)`)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}

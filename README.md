@@ -5,7 +5,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Changelog](https://img.shields.io/badge/Changelog-CHANGELOG-blue)
 
-Compile-once / eval-many expression engine for Go **1.24+**: Pratt parse → optimize → bytecode VM. Stdlib-only. Current release: **[v1.5.0](CHANGELOG.md#150--2026-10-15)**.
+Compile-once / eval-many expression engine for Go **1.24+**: Pratt parse → optimize → bytecode VM. Stdlib-only. Current release: **[v1.5.1](CHANGELOG.md#151--2026-11-26)**.
 
 ```
 go get github.com/aasyanov/hyperex
@@ -59,7 +59,7 @@ go get github.com/aasyanov/hyperex
 | Env shapes         | `nil`, `map[string]any` (preferred hot), other string-key maps, struct / `*struct` (`expr` tag or name; `-` skips)                        |
 | Context            | Every Eval is `ctx`-first; cancel/deadline → `errors.Is(…, ErrOperationCancelled)`; nil ctx → `Background()`                              |
 | Panic policy       | Library path recovers into `*RuntimeError`; `Must*` panics on error by contract; trusted host callbacks that panic become `*RuntimeError` |
-| Sandbox            | Engine `Option` only (never `CompileOption`); budgets expression work, not arbitrary `WithFunction` bodies                                |
+| Sandbox            | Engine `Option` only (never `CompileOption`); budgets expression work, with approximate periodic memory accounting, not arbitrary callback bodies or a hard heap cap |
 | Secure             | JSON-like env coerce (+ `time.Time` / `time.Duration`); deny unsafe member access on arbitrary Go objects — **not** a OS jail             |
 | SafeFunction       | Host callback taxed against `MaxOps` (default tax 16); use when MaxOps must meter host work                                               |
 | Lifecycle          | No `Close` — drop references; pooled VMs return to `sync.Pool` after each Eval                                                            |
@@ -154,15 +154,15 @@ Allow/deny maps are cached at `New`; each Eval only refreshes the Timeout deadli
 | Registration                                     | Trust                      | MaxOps                                                 |
 | ------------------------------------------------ | -------------------------- | ------------------------------------------------------ |
 | `WithFunction` / `WithFunctions` / `AddFunction` | Full trust escape          | Body work is **not** taxed                             |
-| `WithSafeFunction` / `WithSafeFunctionMeta`      | Still Go code, but metered | Default tax 16 ops per call (`SafeFuncMeta` overrides) |
+| `WithSafeFunction` / `WithSafeFunctionMeta`      | Still Go code, with a declared per-call ops tax | Default tax 16 ops per call (`SafeFuncMeta` overrides); callback wall time, memory, and I/O are not bounded |
 
 
-DeniedFuncs / AllowedFuncs apply by **name** to both. Under untrusted expressions + `MaxOps`, prefer SafeFunction so a hostile rule cannot hide unbounded host work behind a trusted callback name.
+DeniedFuncs / AllowedFuncs apply by **name** to both. Under untrusted expressions + `MaxOps`, prefer SafeFunction when each call should carry an explicit operation tax. The tax does not measure or constrain the callback's actual wall time, allocations, or I/O; use process isolation for hostile native code.
 
 ### Numeric / time / quality — **hot** on Eval
 
-- `WithNumericMode` — `NumericDefault` (int-preserving arithmetic) or `NumericFloat64` (`1/2` → `0.5`). String `+` and time/duration ops are unchanged. Normative: LANGUAGE.md §3.5.
-- `WithNonFinite` — `NonFiniteAllow` (default) or `NonFiniteError` (`errors.Is(…, ErrNonFinite)` when Eval would return NaN/Inf).
+- `WithNumericMode` — `NumericDefault` (int-preserving arithmetic) or `NumericFloat64` (`1/2` → `0.5`). String `+` and time/duration ops are unchanged. Normative: LANGUAGE.md §10.
+- `WithNonFinite` — `NonFiniteAllow` (default) or `NonFiniteError` (`errors.Is(…, ErrNonFinite)` for scalar non-finite results, including intermediate arithmetic and final typed conversion; nested arrays/maps are not recursively scanned).
 - **Time / duration** — first-class kinds via `Time` / `Duration` / `NewValue(time.Time|time.Duration)`; operators and builtins in LANGUAGE.md. Secure coerce accepts both. No `now()` builtin — pass wall clock in env.
 - **Quality helpers** — builtins `v` / `q` / `isGood` / `isBad` / `isUncertain` / `withQ` on map `{v,q}` or bare qcode. Exported `QualityClass`* masks. **No** arithmetic auto-unwrap: write `v(temp)+1`, not `temp+1`.
 
@@ -183,7 +183,7 @@ Normative syntax and semantics: **[LANGUAGE.md](LANGUAGE.md)** (wins over README
 | Builtins             | math, strings, arrays, aggregation, `map`/`filter`/`reduce`, JSON helpers, time/quality |
 
 
-Pipe vs bitwise `|` is a common pitfall: `ident | ident` pipes when the RHS name matches a default builtin; integer/float literals never pipe. Match `Analysis.Warnings` with `WarnAmbiguousBitwiseOr` / `WarnBuiltinNamePipe`. Details in LANGUAGE.md §9.
+Pipe vs bitwise `|` is a common pitfall: `ident | ident` pipes when the RHS name matches a default builtin; integer/float literals never pipe. Match `Analysis.Warnings` with `WarnAmbiguousBitwiseOr` / `WarnBuiltinNamePipe`. Details in LANGUAGE.md §6.7.
 
 ### Public vs private
 
@@ -266,7 +266,7 @@ Coverage matrix: [examples/README.md](examples/README.md). SCADA hot-path cookbo
 
 ## API / contracts
 
-Full GoDoc: [pkg.go.dev/github.com/aasyanov/hyperex](https://pkg.go.dev/github.com/aasyanov/hyperex). Language: [LANGUAGE.md](LANGUAGE.md) (§3.5 numeric, §11 sandbox / Secure / SafeFunction).
+Full GoDoc: [pkg.go.dev/github.com/aasyanov/hyperex](https://pkg.go.dev/github.com/aasyanov/hyperex). Language: [LANGUAGE.md](LANGUAGE.md) (§10 numeric, §11 sandbox / Secure / SafeFunction).
 
 ### Engine
 
@@ -392,7 +392,7 @@ Exported for performance. Construct only via `NewValue`, `Int`, `Float`, `String
 ## Pitfalls
 
 > [!WARNING]
-> Pipe vs bitwise `|`: `ident | builtinName` may parse as pipe. Integer/float RHS never pipes. See LANGUAGE.md §9 and `WarnAmbiguousBitwiseOr` / `WarnBuiltinNamePipe`.
+> Pipe vs bitwise `|`: `ident | builtinName` may parse as pipe. Integer/float RHS never pipes. See LANGUAGE.md §6.7 and `WarnAmbiguousBitwiseOr` / `WarnBuiltinNamePipe`.
 
 > [!WARNING]
 > Secure sandbox ≠ OS isolation. `WithFunction` escapes budgets. Prefer `WithSafeFunction` when MaxOps must meter host work.
@@ -450,6 +450,10 @@ Prefer `errors.Is` / `errors.As`. Runtime failures wrap as `*RuntimeError` (unwr
 
 
 ## Benchmarks
+
+### Historical CI snapshots (v1.5.0)
+
+The tables below are preserved **v1.5.0 CI measurements**, not newly measured v1.5.1 performance claims. They document methodology and allocation floors, but latency should be regenerated before quoting a new release or comparing optimized paths after VM/compiler changes.
 
 Two GitHub Actions CI environments, **same CPU SKU** (`AMD EPYC 9V74`, 4 vCPU), `-count=3`. Latency cells are **medians**. `B/op` / `allocs/op` come from the Linux median run (allocation shape is deterministic across OS). Bold marks the faster CI median per row (±3% ties stay unbolded).
 
@@ -630,7 +634,7 @@ These benches measure engine overhead (compile, VM dispatch, builtins, sandbox),
 | Metric                                                  | Evidence                                                                                                   |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | Unit / edge / race / fuzz / bench / example / footprint | `go test ./` (+ `-race`); `fuzz_test.go` (8 `Fuzz*`); `bench_*.go`; `example_test.go`; `footprint_test.go` |
-| Cover bar                                               | CI ≥90% on library package (local **90.2%** statements)                                                    |
+| Cover bar                                               | CI ≥90% on library package (local **90.6%** statements)                                                    |
 | Deps                                                    | stdlib-only (`go.mod`)                                                                                     |
 | CI                                                      | Lint + OS×Go race tests with coverage ≥90%; fuzz discover; main-only benches with pprof artifacts          |
 
